@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voyager live spectrum</title>
+<style>
+  :root { --fg: #e8e8e8; --dim: #8a8a8a; --line: #ffffff; --inst: #5a6a8a; --win: rgba(120,170,255,0.10); --grid: rgba(255,255,255,0.10); }
+  html, body { margin: 0; height: 100%; background: #000; color: var(--fg); overflow: hidden;
+               font: 15px/1.35 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #top, #bottom { position: absolute; left: 14px; right: 14px; white-space: pre; pointer-events: none; }
+  #top { top: 10px; font-size: 18px; }
+  #bottom { bottom: 8px; color: var(--dim); font-size: 13px; }
+  #warn { color: #ffb340; }
+  #click { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 10px 16px;
+           border: 1px solid var(--dim); background: rgba(0,0,0,.7); cursor: pointer; display: none; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="top">waiting for data…</div>
+<div id="bottom"><span id="aud"></span> <span id="warn"></span></div>
+<div id="click">click to enable audio</div>
+
+<script>
+"use strict";
+/* ============================================================================
+   Settings (URL parameters), e.g.  /?lo=8420257500&win=150&gamma=4
+   lo     audio LO, sky frequency in Hz: tone = f_sky - lo   (default: auto, printed at the bottom)
+   woff   centre of the sonified window, Hz offset from the band centre (fixed bin, Doppler corrected)
+   win    half width of the sonified window [Hz]                     (150)
+   gamma  contrast: partial power = hiss + clamp(z-knee, 0, zmax-knee)^gamma   (4)
+   knee   z below which a bin only contributes hiss                  (2)
+   zmax   cap on z so a strong carrier doesn't blow up the level    (8)
+   hiss   level of the noise-floor hiss per bin                     (1)
+   vol    0..1                                                      (0.5)
+   span, center   displayed span [Hz] and its centre offset [Hz] (default: full band)
+   ymin, ymax     fixed y range [dB]       inst=1  also draw the instantaneous spectrum
+   bg     page background, e.g. transparent                          maxosc  max. partials (800)
+   Keys: m mute, + / - volume, c centre the sonified window on the current peak
+   ========================================================================== */
+const Q = new URLSearchParams(location.search);
+const num = (k, d) => (Q.has(k) && Q.get(k) !== "" && isFinite(+Q.get(k))) ? +Q.get(k) : d;
+const cfg = {
+  lo: num("lo", NaN), woff: num("woff", 0), win: num("win", 150), gamma: num("gamma", 4),
+  zmax: num("zmax", 8), knee: num("knee", 2), hiss: num("hiss", 1), vol: num("vol", 0.5), span: num("span", NaN), center: num("center", 0),
+  ymin: num("ymin", NaN), ymax: num("ymax", NaN), inst: Q.get("inst") === "1", maxosc: num("maxosc", 800),
+};
+if (Q.has("bg")) document.body.style.background = document.documentElement.style.background = Q.get("bg");
+let muted = false, loAuto = !isFinite(cfg.lo);
+
+/* ---------------------------------------------------------------- audio synth
+   Bank of narrow-band noise partials: each partial is a complex AR(1) noise
+   process (bandwidth ~ bin width) on a phasor at its audio frequency.
+   A bin far above the noise floor therefore sounds like a (slightly living) tone;
+   a flat spectrum sounds like noise. Shared by AudioWorklet and fallback.       */
+const SYNTH_SRC = `
+class Synth {
+  constructor(fs) { this.fs = fs; this.n = 0; this.gain = 0; this.gainT = 0; this.alloc(0); }
+  alloc(n) {
+    this.n = n;
+    for (const k of ["pr","pi","cr","ci","gr","gi","a","aT","f"]) this[k] = new Float64Array(n);
+    this.pr.fill(1);
+  }
+  set(m) {
+    if (m.vol !== undefined) this.gainT = m.vol;
+    if (!m.f) return;
+    const n = m.f.length;
+    if (n !== this.n) this.alloc(n);
+    this.bw = m.bw;
+    for (let k = 0; k < n; k++) {
+      const w = 2 * Math.PI * m.f[k] / this.fs;
+      this.f[k] = m.f[k]; this.cr[k] = Math.cos(w); this.ci[k] = Math.sin(w);
+      this.aT[k] = (m.f[k] > 20 && m.f[k] < this.fs / 2 - 200) ? m.a[k] : 0;
+    }
+  }
+  gauss() { let u = 0; while (u === 0) u = Math.random();
+            return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random()); }
+  process(out) {
+    const N = out.length; out.fill(0);
+    const rho = Math.exp(-Math.PI * (this.bw || 1) * N / this.fs), s = Math.sqrt((1 - rho * rho) / 2);
+    for (let k = 0; k < this.n; k++) {
+      const a0 = this.a[k], a1 = a0 + (this.aT[k] - a0) * 0.02;   // ~0.13 s amplitude smoothing
+      this.a[k] = a1;
+      if (a0 < 1e-7 && a1 < 1e-7) continue;
+      const g0r = this.gr[k], g0i = this.gi[k];
+      const g1r = rho * g0r + s * this.gauss(), g1i = rho * g0i + s * this.gauss();
+      this.gr[k] = g1r; this.gi[k] = g1i;
+      let Gr = a0 * g0r, Gi = a0 * g0i;
+      const dGr = (a1 * g1r - Gr) / N, dGi = (a1 * g1i - Gi) / N;
+      let pr = this.pr[k], pi = this.pi[k]; const cr = this.cr[k], ci = this.ci[k];
+      for (let j = 0; j < N; j++) {
+        const t = pr * cr - pi * ci; pi = pr * ci + pi * cr; pr = t;
+        out[j] += Gr * pr - Gi * pi; Gr += dGr; Gi += dGi;
+      }
+      const r = 1 / Math.hypot(pr, pi); this.pr[k] = pr * r; this.pi[k] = pi * r;
+    }
+    const g0 = this.gain, g1 = g0 + (this.gainT - g0) * 0.05; this.gain = g1;
+    for (let j = 0; j < N; j++) out[j] = Math.tanh(out[j] * (g0 + (g1 - g0) * j / N));
+  }
+}`;
+const WORKLET_SRC = SYNTH_SRC + `
+class P extends AudioWorkletProcessor {
+  constructor() { super(); this.s = new Synth(sampleRate); this.port.onmessage = e => this.s.set(e.data); }
+  process(_, outputs) {
+    const o = outputs[0]; this.s.process(o[0]);
+    for (let c = 1; c < o.length; c++) o[c].set(o[0]);
+    return true;
+  }
+}
+registerProcessor("vgr-synth", P);`;
+
+let actx = null, send = () => {};
+async function initAudio() {
+  actx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "playback" });
+  if (actx.audioWorklet && window.isSecureContext) {
+    const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "application/javascript" }));
+    await actx.audioWorklet.addModule(url);
+    const node = new AudioWorkletNode(actx, "vgr-synth", { outputChannelCount: [2] });
+    node.connect(actx.destination);
+    send = m => node.port.postMessage(m);
+  } else {                                   // e.g. page opened via http://<ip>/ (not a secure context)
+    const Synth = new Function(SYNTH_SRC + "; return Synth;")();
+    const s = new Synth(actx.sampleRate), buf = new Float32Array(128);
+    const sp = actx.createScriptProcessor(2048, 0, 2);
+    sp.onaudioprocess = e => {
+      const L = e.outputBuffer.getChannelData(0), R = e.outputBuffer.getChannelData(1);
+      for (let i = 0; i < L.length; i += 128) { s.process(buf); L.set(buf, i); }
+      R.set(L);
+    };
+    sp.connect(actx.destination);
+    send = m => s.set(m);
+  }
+  send({ vol: muted ? 0 : cfg.vol });
+  checkAudio();
+}
+function checkAudio() { document.getElementById("click").style.display = actx && actx.state !== "running" ? "block" : "none"; }
+const resume = () => { if (actx && actx.state !== "running") actx.resume().then(checkAudio); };
+addEventListener("click", resume);
+initAudio().catch(e => { document.getElementById("warn").textContent = "audio unavailable: " + e; });
+setInterval(checkAudio, 1000);
+
+addEventListener("keydown", e => {
+  resume();
+  if (e.key === "m") muted = !muted;
+  else if (e.key === "+" || e.key === "=") cfg.vol = Math.min(1, cfg.vol * 1.25 + 0.01);
+  else if (e.key === "-") cfg.vol = Math.max(0, cfg.vol / 1.25);
+  else if (e.key === "c" && last.peakOff !== undefined) cfg.woff = last.peakOff;
+  else return;
+  send({ vol: muted ? 0 : cfg.vol });
+});
+
+/* ------------------------------------------------------------------- helpers */
+function median(a) { const b = Float64Array.from(a).sort(); const n = b.length;
+                     return n ? (n % 2 ? b[(n - 1) / 2] : 0.5 * (b[n / 2 - 1] + b[n / 2])) : NaN; }
+// partial power as a function of z (bin excess over the floor, in units of the averaging noise):
+//   hiss            the measured noise floor itself, equal in every bin -> band-limited noise
+//   + clamp(z - knee, 0, zmax - knee)^gamma    contrast term, only for bins clearly above the noise
+const weight = z => cfg.hiss + Math.pow(Math.min(Math.max(z - cfg.knee, 0), cfg.zmax - cfg.knee), cfg.gamma);
+// expected weight of a pure-noise bin, z ~ N(0,1): keeps off-source loudness fixed for any setting
+let meanW = NaN;
+function noiseMeanWeight() { let s = 0, ws = 0;
+  for (let z = -8; z <= 8; z += 0.001) { const g = Math.exp(-z * z / 2); s += g * weight(z); ws += g; }
+  return s / ws; }
+const fmtUTC = t => new Date(t * 1000).toISOString().replace("T", " ").slice(0, 19) + " UTC";
+
+/* ------------------------------------------------------------ data handling */
+let last = {}, fresh = false, lastRx = 0;
+
+function onSpectrum(buf) {
+  const dv = new DataView(buf), hl = dv.getUint32(0, true);
+  const h = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl)));
+  const N = h.num_bins;
+  const avg = new Float32Array(buf, 4 + hl, N), inst = new Float32Array(buf, 4 + hl + 4 * N, N);
+  const df = h.df, mid = N / 2;
+
+  // sonified window (in bins) and a wider reference region for the noise statistics
+  const c = Math.round(mid + cfg.woff / df), w = Math.max(1, Math.round(cfg.win / df));
+  const i0 = Math.max(0, c - w), i1 = Math.min(N - 1, c + w);
+  const r0 = Math.max(Math.round(0.1 * N), c - 4 * w), r1 = Math.min(Math.round(0.9 * N), c + 4 * w);
+  const ref = avg.subarray(r0, r1 + 1);
+  const floor = median(ref);
+  const dev = Float64Array.from(ref, v => Math.abs(v / floor - 1));
+  const sigma = 1.4826 * median(dev);                // relative noise of the averaged spectrum
+
+  // peak in the window (display only; the sound does not use it)
+  let ip = i0; for (let i = i0; i <= i1; i++) if (avg[i] > avg[ip]) ip = i;
+  const fsky = i => h.f0 + i * df;
+
+  // partials: aggregate bins if there are too many
+  const nb = i1 - i0 + 1, A = Math.max(1, Math.ceil(nb / cfg.maxosc)), np = Math.floor(nb / A);
+  if (loAuto && isFinite(fsky(c))) { cfg.lo = Math.round((fsky(c) - 1500) / 10) * 10; loAuto = false; cfg.loWasAuto = true; }
+  const f = new Float32Array(np), a = new Float32Array(np);
+  if (!isFinite(meanW)) meanW = noiseMeanWeight();
+  const norm = 1 / Math.sqrt(np * meanW) * 0.25;   // off-source RMS ~0.25 at vol 1
+  const sg = sigma / Math.sqrt(A);
+  for (let k = 0; k < np; k++) {
+    let p = 0, ff = 0;
+    for (let j = 0; j < A; j++) { const i = i0 + k * A + j; p += avg[i]; ff += fsky(i); }
+    p /= A; ff /= A;
+    f[k] = ff - cfg.lo;
+    a[k] = Math.sqrt(weight((p / floor - 1) / sg)) * norm * Math.SQRT2;
+  }
+  if (sigma > 0 && isFinite(floor)) send({ f, a, bw: A * df });
+
+  last = { h, avg, inst, N, df, i0, i1, ip, floor, sigma, fsky,
+           peakOff: (ip - mid) * df, peakZ: (avg[ip] / floor - 1) / sigma, tone: fsky(ip) - cfg.lo,
+           toneLo: fsky(i0) - cfg.lo, toneHi: fsky(i1) - cfg.lo, A };
+  fresh = true; lastRx = performance.now();
+}
+
+function connect() {
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = e => { try { onSpectrum(e.data); } catch (err) { console.error(err); } };
+  ws.onclose = () => setTimeout(connect, 1000);
+}
+connect();
+
+/* ------------------------------------------------------------------ drawing */
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+let yLo = NaN, yHi = NaN;
+
+function niceStep(range, n) { const r = range / n, p = Math.pow(10, Math.floor(Math.log10(r)));
+  return [1, 2, 2.5, 5, 10].map(m => m * p).find(s => s >= r); }
+
+function draw() {
+  requestAnimationFrame(draw);
+  const stale = lastRx && performance.now() - lastRx > 5000;
+  document.getElementById("warn").textContent = stale ? "  no data for " + ((performance.now() - lastRx) / 1000).toFixed(0) + " s" : "";
+  if (!fresh) return; fresh = false;
+  const L = last, h = L.h, dpr = devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+
+  const pad = { l: 64, r: 18, t: 70, b: 76 }, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  const mid = L.N / 2, span = isFinite(cfg.span) ? cfg.span : L.N * L.df;
+  const b0 = Math.max(0, Math.floor(mid + (cfg.center - span / 2) / L.df));
+  const b1 = Math.min(L.N - 1, Math.ceil(mid + (cfg.center + span / 2) / L.df));
+  const fA = L.fsky(b0), fB = L.fsky(b1);
+  const X = f => pad.l + (f - fA) / (fB - fA) * pw;
+  const dB = v => 10 * Math.log10(v);
+
+  // y range: robust percentiles of the averaged spectrum, smoothed
+  if (isFinite(cfg.ymin) && isFinite(cfg.ymax)) { yLo = cfg.ymin; yHi = cfg.ymax; }
+  else {
+    const s = Float64Array.from(L.avg.subarray(b0, b1 + 1), dB).sort();
+    const lo = s[Math.floor(0.02 * (s.length - 1))], hi = s[s.length - 1];
+    const tl = lo - 0.25 * (hi - lo) - 0.2, th = hi + 0.25 * (hi - lo) + 0.2;
+    yLo = isFinite(yLo) ? (tl < yLo ? tl : yLo + 0.02 * (tl - yLo)) : tl;
+    yHi = isFinite(yHi) ? (th > yHi ? th : yHi + 0.02 * (th - yHi)) : th;
+  }
+  const Y = v => pad.t + (1 - (v - yLo) / (yHi - yLo)) * ph;
+
+  // grid + labels
+  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--grid");
+  ctx.fillStyle = "#8a8a8a"; ctx.font = "12px ui-monospace, Menlo, monospace"; ctx.lineWidth = 1;
+  const xs = niceStep(fB - fA, 5), ys = niceStep(yHi - yLo, 5);
+  const dec = Math.max(0, Math.ceil(-Math.log10(xs / 1e6)));
+  ctx.textAlign = "center";
+  for (let f = Math.ceil(fA / xs) * xs; f <= fB; f += xs) {
+    const x = Math.round(X(f)) + 0.5; ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, pad.t + ph); ctx.stroke();
+    ctx.fillText((f / 1e6).toFixed(dec), x, pad.t + ph + 16);
+  }
+  ctx.fillText("sky frequency (MHz)", pad.l + pw / 2, pad.t + ph + 34);
+  ctx.textAlign = "right";
+  for (let v = Math.ceil(yLo / ys) * ys; v <= yHi; v += ys) {
+    const y = Math.round(Y(v)) + 0.5; ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + pw, y); ctx.stroke();
+    ctx.fillText(v.toFixed(ys < 1 ? 1 : 0), pad.l - 6, y + 4);
+  }
+  ctx.save(); ctx.translate(16, pad.t + ph / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center";
+  ctx.fillText("power (dB)", 0, 0); ctx.restore();
+
+  // sonified window
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--win");
+  const wx0 = X(L.fsky(L.i0)), wx1 = X(L.fsky(L.i1));
+  ctx.fillRect(wx0, pad.t, Math.max(1, wx1 - wx0), ph);
+
+  // traces: min/max per pixel column
+  ctx.save(); ctx.beginPath(); ctx.rect(pad.l, pad.t, pw, ph); ctx.clip();
+  const trace = (arr, color, lw) => {
+    ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.beginPath();
+    const perPx = (b1 - b0) / pw;
+    if (perPx <= 1.5) {
+      for (let i = b0; i <= b1; i++) { const x = X(L.fsky(i)), y = Y(dB(arr[i])); i === b0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+    } else {
+      for (let px = 0; px < pw; px++) {
+        const j0 = b0 + Math.floor(px * perPx), j1 = Math.min(b1, b0 + Math.floor((px + 1) * perPx));
+        let mn = Infinity, mx = -Infinity;
+        for (let i = j0; i <= j1; i++) { const v = arr[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
+        ctx.moveTo(pad.l + px + 0.5, Y(dB(mn))); ctx.lineTo(pad.l + px + 0.5, Y(dB(mx)) - 0.5);
+      }
+    }
+    ctx.stroke();
+  };
+  if (cfg.inst) trace(L.inst, getComputedStyle(document.documentElement).getPropertyValue("--inst"), 1);
+  trace(L.avg, getComputedStyle(document.documentElement).getPropertyValue("--line"), 1.2);
+  ctx.restore();
+
+  // text
+  const el = h.dt && isFinite(h.dt.el_deg) ? h.dt.el_deg : (h.tracker ? h.tracker.elevation : NaN);
+  const peakdB = 10 * Math.log10(L.avg[L.ip] / L.floor);
+  document.getElementById("top").textContent =
+    `${h.source || "spectrum"}   ${fmtUTC(h.t)}` + (isFinite(el) && el !== null ? `   el ${(+el).toFixed(1)}°` : "") + "\n" +
+    `peak ${(L.fsky(L.ip) / 1e6).toFixed(6)} MHz   ${peakdB >= 0 ? "+" : ""}${peakdB.toFixed(1)} dB   ${L.peakZ.toFixed(1)} σ`;
+  const tonesOK = L.toneLo > 20 && L.toneHi < (actx ? actx.sampleRate / 2 - 200 : 20000);
+  document.getElementById("aud").textContent =
+    `audio  LO ${(cfg.lo / 1e6).toFixed(6)} MHz${cfg.loWasAuto ? " (auto: add ?lo=" + cfg.lo + " to fix)" : ""}` +
+    `   peak tone ${L.tone.toFixed(0)} Hz   window ±${cfg.win} Hz   γ ${cfg.gamma}` +
+    `   vol ${muted ? "muted" : cfg.vol.toFixed(2)}   ${h.integration_time.toFixed(2)} s × ${h.overlap}, τ ${h.tau ?? "–"} s` +
+    (tonesOK ? "" : "   ⚠ window outside audio range, change lo");
+}
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
