@@ -18,7 +18,8 @@ VRT IQ (other machine) ─► vrt_tuner --tracking ─► vrt_spectrum ... --pub
 Example for the stream (1 Hz bins, 4 updates/s, 60 s average), keeping gnuplot as a backup:
 
 ```
-vrt_spectrum --tau 300 --fftmax --bin-size 1 --wola --overlap 4 --integration-time 0.25 --gnuplot --fftmax --pub-port 50500 | gnuplot
+vrt_spectrum <your ports/options> --bin-size 1 --wola --overlap 4 --integration-time 0.25 --tau 60 \
+             --gnuplot --fftmax --pub-port 50500 | gnuplot
 ```
 
 ## 2. Relay and page
@@ -37,9 +38,11 @@ URL parameters (all optional):
 | param | meaning | default |
 |---|---|---|
 | `lo` | audio LO, sky frequency in Hz; tone = f_sky − lo (fixed: 1:1 Doppler) | auto, printed bottom-left |
+| `tone` | without `lo`: pick lo at page load so the window centre (`woff`) sounds at this pitch | 1000 |
 | `woff` | centre of the sonified window, Hz from band centre (fixed bin) | 0 |
 | `win` | half width of the sonified window, Hz | 150 |
 | `gamma`, `knee`, `zmax`, `hiss` | contrast curve, see below | 4, 2, 8, 1 |
+| `tbw` | bandwidth of the above-noise part of each bin, Hz (smaller = steadier tone) | 0.2 |
 | `vol` | 0..1 | 0.5 |
 | `span`, `center` | displayed span / centre offset, Hz | full band |
 | `ymin`, `ymax` | fixed y range, dB | auto |
@@ -61,9 +64,18 @@ Off-source loudness is normalised, so it stays the same for any window size or c
 
 Because averaging happens in the Doppler-corrected frame and playback in the sky frame, the pitch drifts exactly as the real Doppler does.
 
-**Choosing `lo` for the day:** take the carrier sky frequency at stream start from the tracker, and set lo about 2 kHz below it. On 18 Nov 09:16–10:46 UTC, my estimate is that the topocentric drift is roughly −0.3 Hz/s: Earth rotation gives about −0.43, partly offset by Earth's orbital acceleration. That's about −1.5 kHz over 90 minutes. Check this against your tracker. The page warns when the window leaves the audio range.
+**Pitch.** `woff` only chooses *which bin* is sonified, and `lo` (or `tone`, at page load) sets the pitch. Put `woff` on the carrier first (press `c` once on source), then set the pitch. In the May 2025 recording the carrier is at `woff=251`, so `?woff=251&tone=500` starts at 500 Hz. With 1:1 Doppler the pitch can't stay put: it drifts at the tracker's Doppler rate, which the status line shows. In the recording that was −0.39 Hz/s, so 500 Hz becomes about 75 Hz after 18 minutes.
+
+**Choosing `lo` for the day:** set it explicitly, because `tone` re-picks lo on every page reload. Use lo = (tracker frequency + Doppler at the moment you choose) + woff − the pitch you want then. For example, ~1 kHz at 10:16:06 gives roughly 2.3 kHz at 09:16 and 0.4 kHz at 10:46.
+
+For 18 Nov the drift should be roughly −0.3 to −0.4 Hz/s: Earth rotation, partly offset by Earth's orbital acceleration. Your recording showed −0.38 to −0.41 Hz/s. The page warns when the window leaves the audio range.
+
+## sigmf_to_vrt --vrt fix
+
+`sigmf_to_vrt-vrt-overflow.patch`: with `--vrt`, packets are `fread` into `samples[VRT_SAMPLES_PER_PACKET]` (40000 bytes). A full 10000-sample data packet is 10007 words = 40028 bytes, so the read overflows the stack by 28 bytes. Linux glibc builds abort with `*** buffer overflow detected ***`; on macOS it probably just overwrites the next variable silently. The patch reads into `buffer[VRT_DATA_PACKET_SIZE]` instead, with a size check.
 
 ## Test files
 
 - `synthetic_sonification.mp3`: the page's own audio code, rendered offline from a synthetic run (details in the chat message).
+- `vgr1_recording_sonified_tone500.mp3`: first 5 minutes of your 14 May 2025 recording (`--tau 300 --bin-size 1 --wola`), `?woff=251&tone=500`.
 - `live_test.png`: screenshot of the page during the live test.

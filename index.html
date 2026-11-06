@@ -28,12 +28,14 @@
 /* ============================================================================
    Settings (URL parameters), e.g.  /?lo=8420257500&win=150&gamma=4
    lo     audio LO, sky frequency in Hz: tone = f_sky - lo   (default: auto, printed at the bottom)
+   tone   if lo is not given: choose lo at page load so the window centre sounds at this pitch [Hz] (1000)
    woff   centre of the sonified window, Hz offset from the band centre (fixed bin, Doppler corrected)
    win    half width of the sonified window [Hz]                     (150)
    gamma  contrast: partial power = hiss + clamp(z-knee, 0, zmax-knee)^gamma   (4)
    knee   z below which a bin only contributes hiss                  (2)
    zmax   cap on z so a strong carrier doesn't blow up the level    (8)
    hiss   level of the noise-floor hiss per bin                     (1)
+   tbw    bandwidth of the above-noise part of each bin [Hz]: smaller = steadier tone   (0.2)
    vol    0..1                                                      (0.5)
    span, center   displayed span [Hz] and its centre offset [Hz] (default: full band)
    ymin, ymax     fixed y range [dB]       inst=1  also draw the instantaneous spectrum
@@ -43,7 +45,7 @@
 const Q = new URLSearchParams(location.search);
 const num = (k, d) => (Q.has(k) && Q.get(k) !== "" && isFinite(+Q.get(k))) ? +Q.get(k) : d;
 const cfg = {
-  lo: num("lo", NaN), woff: num("woff", 0), win: num("win", 150), gamma: num("gamma", 4),
+  lo: num("lo", NaN), tone: num("tone", 1000), tbw: num("tbw", 0.2), woff: num("woff", 0), win: num("win", 150), gamma: num("gamma", 4),
   zmax: num("zmax", 8), knee: num("knee", 2), hiss: num("hiss", 1), vol: num("vol", 0.5), span: num("span", NaN), center: num("center", 0),
   ymin: num("ymin", NaN), ymax: num("ymax", NaN), inst: Q.get("inst") === "1", maxosc: num("maxosc", 800),
 };
@@ -63,24 +65,30 @@ class Synth {
     for (const k of ["pr","pi","cr","ci","gr","gi","a","aT","f"]) this[k] = new Float64Array(n);
     this.pr.fill(1);
   }
+  // m.f: audio frequency per bin; m.a: hiss amplitude (bandwidth m.bw);
+  // m.e: excess amplitude (bandwidth m.tbw, narrower -> steadier tone). Partials k and k+n share a frequency.
   set(m) {
     if (m.vol !== undefined) this.gainT = m.vol;
     if (!m.f) return;
     const n = m.f.length;
-    if (n !== this.n) this.alloc(n);
-    this.bw = m.bw;
+    if (2 * n !== this.n) this.alloc(2 * n);
+    this.bw = m.bw; this.tbw = m.tbw;
     for (let k = 0; k < n; k++) {
-      const w = 2 * Math.PI * m.f[k] / this.fs;
-      this.f[k] = m.f[k]; this.cr[k] = Math.cos(w); this.ci[k] = Math.sin(w);
-      this.aT[k] = (m.f[k] > 20 && m.f[k] < this.fs / 2 - 200) ? m.a[k] : 0;
+      const w = 2 * Math.PI * m.f[k] / this.fs, ok = m.f[k] > 20 && m.f[k] < this.fs / 2 - 200;
+      for (const [j, amp] of [[k, m.a[k]], [k + n, m.e[k]]]) {
+        this.f[j] = m.f[k]; this.cr[j] = Math.cos(w); this.ci[j] = Math.sin(w);
+        this.aT[j] = ok ? amp : 0;
+      }
     }
   }
   gauss() { let u = 0; while (u === 0) u = Math.random();
             return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random()); }
   process(out) {
-    const N = out.length; out.fill(0);
-    const rho = Math.exp(-Math.PI * (this.bw || 1) * N / this.fs), s = Math.sqrt((1 - rho * rho) / 2);
+    const N = out.length, half = this.n / 2; out.fill(0);
+    const r1 = Math.exp(-Math.PI * (this.bw || 1) * N / this.fs), s1 = Math.sqrt((1 - r1 * r1) / 2);
+    const r2 = Math.exp(-Math.PI * (this.tbw || this.bw || 1) * N / this.fs), s2 = Math.sqrt((1 - r2 * r2) / 2);
     for (let k = 0; k < this.n; k++) {
+      const rho = k < half ? r1 : r2, s = k < half ? s1 : s2;
       const a0 = this.a[k], a1 = a0 + (this.aT[k] - a0) * 0.02;   // ~0.13 s amplitude smoothing
       this.a[k] = a1;
       if (a0 < 1e-7 && a1 < 1e-7) continue;
@@ -190,8 +198,9 @@ function onSpectrum(buf) {
 
   // partials: aggregate bins if there are too many
   const nb = i1 - i0 + 1, A = Math.max(1, Math.ceil(nb / cfg.maxosc)), np = Math.floor(nb / A);
-  if (loAuto && isFinite(fsky(c))) { cfg.lo = Math.round((fsky(c) - 1500) / 10) * 10; loAuto = false; cfg.loWasAuto = true; }
-  const f = new Float32Array(np), a = new Float32Array(np);
+  if (loAuto && isFinite(fsky(c))) { cfg.lo = Math.round(fsky(c) - cfg.tone); loAuto = false; cfg.loWasAuto = true; }
+  const f = new Float32Array(np), a = new Float32Array(np), e = new Float32Array(np);
+  const hissW = cfg.hiss, excessW = z => weight(z) - hissW;
   if (!isFinite(meanW)) meanW = noiseMeanWeight();
   const norm = 1 / Math.sqrt(np * meanW) * 0.25;   // off-source RMS ~0.25 at vol 1
   const sg = sigma / Math.sqrt(A);
@@ -200,9 +209,10 @@ function onSpectrum(buf) {
     for (let j = 0; j < A; j++) { const i = i0 + k * A + j; p += avg[i]; ff += fsky(i); }
     p /= A; ff /= A;
     f[k] = ff - cfg.lo;
-    a[k] = Math.sqrt(weight((p / floor - 1) / sg)) * norm * Math.SQRT2;
+    a[k] = Math.sqrt(hissW) * norm * Math.SQRT2;
+    e[k] = Math.sqrt(excessW((p / floor - 1) / sg)) * norm * Math.SQRT2;
   }
-  if (sigma > 0 && isFinite(floor)) send({ f, a, bw: A * df });
+  if (sigma > 0 && isFinite(floor)) send({ f, a, e, bw: A * df, tbw: Math.min(cfg.tbw, A * df) });
 
   last = { h, avg, inst, N, df, i0, i1, ip, floor, sigma, fsky,
            peakOff: (ip - mid) * df, peakZ: (avg[ip] / floor - 1) / sigma, tone: fsky(ip) - cfg.lo,
@@ -308,7 +318,9 @@ function draw() {
   const tonesOK = L.toneLo > 20 && L.toneHi < (actx ? actx.sampleRate / 2 - 200 : 20000);
   document.getElementById("aud").textContent =
     `audio  LO ${(cfg.lo / 1e6).toFixed(6)} MHz${cfg.loWasAuto ? " (auto: add ?lo=" + cfg.lo + " to fix)" : ""}` +
-    `   peak tone ${L.tone.toFixed(0)} Hz   window ±${cfg.win} Hz   γ ${cfg.gamma}` +
+    `   peak tone ${L.tone.toFixed(0)} Hz` +
+    (h.tracker && isFinite(h.tracker.doppler_rate) ? ` (drift ${h.tracker.doppler_rate.toFixed(2)} Hz/s)` : "") +
+    `   window ±${cfg.win} Hz   γ ${cfg.gamma}` +
     `   vol ${muted ? "muted" : cfg.vol.toFixed(2)}   ${h.integration_time.toFixed(2)} s × ${h.overlap}, τ ${h.tau ?? "–"} s` +
     (tonesOK ? "" : "   ⚠ window outside audio range, change lo");
 }
