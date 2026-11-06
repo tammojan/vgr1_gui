@@ -29,6 +29,8 @@ pip3 install pyzmq aiohttp
 python3 vgr_relay.py --zmq tcp://localhost:50500 --http-port 8090
 ```
 
+`vrt_tuner` sends 10000-sample packets, which at 10 kHz is one per second. With `--overlap 4`, `vrt_spectrum` therefore emits its four spectra in a burst once per second. The relay releases them at their data timestamps plus a constant delay (the largest lag of the last 5 s, about 0.75 s), so the page updates evenly every 0.25 s. `--no-pace` turns this off.
+
 - Open `http://localhost:8090/` in a browser. Keep `localhost`: AudioWorklet needs a secure context. Over a plain IP address the page falls back to the older ScriptProcessor.
 - **OBS:** add a Browser source with that URL, about 1280×540, and tick **Control audio via OBS**. The audio then appears as the source's own channel in the mixer.
 - In a normal browser, click once to enable audio.
