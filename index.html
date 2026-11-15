@@ -44,6 +44,7 @@
    span, center   displayed span [Hz] and its centre offset [Hz] (default: full band)
    ymin, ymax     fixed y range [dB]       inst=1  also draw the instantaneous spectrum
    theme  light: white background, dark text, line #9400d3          (dark)
+   status 0: hide the status line at the bottom (and its warnings)   (1)
    line   trace colour as hex without #, e.g. line=9400d3
    bg     page background, e.g. transparent                          maxosc  max. partials (800)
    Keys: m mute, + / - volume, c centre the sonified window on the current peak
@@ -53,10 +54,11 @@ const num = (k, d) => (Q.has(k) && Q.get(k) !== "" && isFinite(+Q.get(k))) ? +Q.
 const cfg = {
   lo: num("lo", NaN), tone: num("tone", 1000), tbw: num("tbw", 0.2), woff: num("woff", 0), win: num("win", 150), gamma: num("gamma", 4),
   zmax: num("zmax", 8), knee: num("knee", 2), hiss: num("hiss", 1), vol: num("vol", 0.5), span: num("span", NaN), center: num("center", 0),
-  ymin: num("ymin", NaN), ymax: num("ymax", NaN), inst: Q.get("inst") === "1", maxosc: num("maxosc", 800),
+  ymin: num("ymin", NaN), ymax: num("ymax", NaN), inst: Q.get("inst") === "1", maxosc: num("maxosc", 800), status: Q.get("status") !== "0",
 };
 const root = document.documentElement;
 if (Q.get("theme") === "light") root.classList.add("light");
+if (!cfg.status) document.getElementById("bottom").style.display = "none";
 if (/^[0-9a-fA-F]{3,8}$/.test(Q.get("line") || "")) root.style.setProperty("--line", "#" + Q.get("line"));
 if (Q.has("bg")) root.style.setProperty("--bg", Q.get("bg"));
 const css = k => getComputedStyle(root).getPropertyValue(k).trim();
@@ -261,7 +263,7 @@ function draw() {
   if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
 
-  const pad = { l: 64, r: 18, t: 46, b: 76 }, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  const pad = { l: 64, r: 18, t: 46, b: cfg.status ? 76 : 50 }, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
   const mid = L.N / 2, span = isFinite(cfg.span) ? cfg.span : L.N * L.df;
   const b0 = Math.max(0, Math.floor(mid + (cfg.center - span / 2) / L.df));
   const b1 = Math.min(L.N - 1, Math.ceil(mid + (cfg.center + span / 2) / L.df));

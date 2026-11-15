@@ -18,8 +18,7 @@ VRT IQ (other machine) ─► vrt_tuner --tracking ─► vrt_spectrum ... --pub
 Example for the stream (1 Hz bins, 4 updates/s, 60 s average), keeping gnuplot as a backup:
 
 ```
-vrt_spectrum <your ports/options> --bin-size 1 --wola --overlap 4 --integration-time 0.25 --tau 60 \
-             --gnuplot --fftmax --pub-port 50500 | gnuplot
+vrt_spectrum --instance 1 --bin-size 1 --wola --overlap 4 --integration-time 0.25 --tau 60 --gnuplot --fftmax --pub-port 50500 | gnuplot
 ```
 
 ## 2. Relay and page
@@ -52,6 +51,7 @@ URL parameters (all optional):
 | `theme=light` | white background, dark text and grid, trace `#9400d3` | dark |
 | `line` | trace colour as hex without `#`, e.g. `line=9400d3` | theme |
 | `bg` | background, e.g. `transparent` | theme |
+| `status=0` | hide the status line at the bottom (LO, tone, elevation, warnings) | shown |
 
 The title shows how much data is in the displayed spectrum. `vrt_spectrum` takes a plain mean of all spectra since it started until that covers τ, then switches to an exponential average:
 
@@ -62,6 +62,8 @@ The title shows how much data is in the displayed spectrum. `vrt_spectrum` takes
 The count restarts when `vrt_spectrum` restarts. Elevation and the other technical details are in the footer.
 
 Keys: `m` mute, `+`/`-` volume, `c` centre the sonified window on the current peak (then put that `woff` in the URL).
+
+http://localhost:8090/?span=4000&woff=0&tone=600&theme=light&bg=transparent&status=0
 
 ## 3. Sonification
 
