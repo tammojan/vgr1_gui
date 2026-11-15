@@ -11,7 +11,7 @@ VRT IQ (other machine) ─► vrt_tuner --tracking ─► vrt_spectrum ... --pub
 
 - `--overlap K`: advance num-bins/K samples per FFT, with or without `--wola`. The `--integration-time` can then go down to (1/bin size)/K. With `K=1`, output is byte-identical to the unpatched tool. I tested plain `--db`, `--gnuplot --fftmax` and `--wola`, 250 integrations each.
 - `--pub-port P`: every integration is also published as a 3-part ZMQ message. This works alongside any stdout mode.
-  1. JSON header: `t`, `rf_freq` (including the fractional Hz), `f0`/`df` (sky frequency of bin 0 and bin step), `num_bins`, `integration_time`, `tau`, `overlap`, `wola`, `source`, and `tracker` / `dt` blocks when those contexts are in the stream.
+  1. JSON header: `t`, `rf_freq` (including the fractional Hz), `f0`/`df` (sky frequency of bin 0 and bin step), `num_bins`, `seq` (spectra since start), `integration_time`, `tau`, `averaging` (`none`, `running` for `--tau inf`, or `exponential`), `overlap`, `wola`, `source`, and `tracker` / `dt` blocks when those contexts are in the stream.
   2. float32 averaged spectrum (linear, `--poly`-corrected).
   3. float32 instantaneous spectrum.
 
@@ -49,7 +49,17 @@ URL parameters (all optional):
 | `span`, `center` | displayed span / centre offset, Hz | full band |
 | `ymin`, `ymax` | fixed y range, dB | auto |
 | `inst=1` | also draw the instantaneous spectrum | off |
-| `bg` | background, e.g. `transparent` | black |
+| `theme=light` | white background, dark text and grid, trace `#9400d3` | dark |
+| `line` | trace colour as hex without `#`, e.g. `line=9400d3` | theme |
+| `bg` | background, e.g. `transparent` | theme |
+
+The title shows how much data is in the displayed spectrum. `vrt_spectrum` takes a plain mean of all spectra since it started until that covers τ, then switches to an exponential average:
+
+- `average of 2.3 minutes`: during the first τ, and always with `--tau inf`, which never forgets.
+- `average of the last ~5.0 minutes (exponential)`: once τ is reached.
+- `no averaging`: without `--tau`.
+
+The count restarts when `vrt_spectrum` restarts. Elevation and the other technical details are in the footer.
 
 Keys: `m` mute, `+`/`-` volume, `c` centre the sonified window on the current peak (then put that `woff` in the URL).
 

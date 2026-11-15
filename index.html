@@ -5,16 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Voyager live spectrum</title>
 <style>
-  :root { --fg: #e8e8e8; --dim: #8a8a8a; --line: #ffffff; --inst: #5a6a8a; --win: rgba(120,170,255,0.10); --grid: rgba(255,255,255,0.10); }
-  html, body { margin: 0; height: 100%; background: #000; color: var(--fg); overflow: hidden;
+  :root { --bg: #000; --fg: #e8e8e8; --dim: #8a8a8a; --line: #ffffff; --inst: #5a6a8a;
+          --win: rgba(120,170,255,0.10); --grid: rgba(255,255,255,0.10); }
+  :root.light { --bg: #fff; --fg: #1a1a1a; --dim: #555; --line: #9400d3; --inst: #d9bdea;
+                --win: rgba(148,0,211,0.07); --grid: rgba(0,0,0,0.13); }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
                font: 15px/1.35 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
   #top, #bottom { position: absolute; left: 14px; right: 14px; white-space: pre; pointer-events: none; }
   #top { top: 10px; font-size: 18px; }
   #bottom { bottom: 8px; color: var(--dim); font-size: 13px; }
   #warn { color: #ffb340; }
+  :root.light #warn { color: #b35900; }
   #click { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 10px 16px;
-           border: 1px solid var(--dim); background: rgba(0,0,0,.7); cursor: pointer; display: none; }
+           border: 1px solid var(--dim); background: var(--bg); cursor: pointer; display: none; }
 </style>
 </head>
 <body>
@@ -39,6 +43,8 @@
    vol    0..1                                                      (0.5)
    span, center   displayed span [Hz] and its centre offset [Hz] (default: full band)
    ymin, ymax     fixed y range [dB]       inst=1  also draw the instantaneous spectrum
+   theme  light: white background, dark text, line #9400d3          (dark)
+   line   trace colour as hex without #, e.g. line=9400d3
    bg     page background, e.g. transparent                          maxosc  max. partials (800)
    Keys: m mute, + / - volume, c centre the sonified window on the current peak
    ========================================================================== */
@@ -49,7 +55,13 @@ const cfg = {
   zmax: num("zmax", 8), knee: num("knee", 2), hiss: num("hiss", 1), vol: num("vol", 0.5), span: num("span", NaN), center: num("center", 0),
   ymin: num("ymin", NaN), ymax: num("ymax", NaN), inst: Q.get("inst") === "1", maxosc: num("maxosc", 800),
 };
-if (Q.has("bg")) document.body.style.background = document.documentElement.style.background = Q.get("bg");
+const root = document.documentElement;
+if (Q.get("theme") === "light") root.classList.add("light");
+if (/^[0-9a-fA-F]{3,8}$/.test(Q.get("line") || "")) root.style.setProperty("--line", "#" + Q.get("line"));
+if (Q.has("bg")) root.style.setProperty("--bg", Q.get("bg"));
+const css = k => getComputedStyle(root).getPropertyValue(k).trim();
+const C = { fg: css("--fg"), dim: css("--dim"), line: css("--line"), inst: css("--inst"), win: css("--win"),
+            grid: css("--grid"), bg: css("--bg") };
 let muted = false, loAuto = !isFinite(cfg.lo);
 
 /* ---------------------------------------------------------------- audio synth
@@ -192,8 +204,12 @@ function onSpectrum(buf) {
   const dev = Float64Array.from(ref, v => Math.abs(v / floor - 1));
   const sigma = 1.4826 * median(dev);                // relative noise of the averaged spectrum
 
-  // peak in the window (display only; the sound does not use it)
-  let ip = i0; for (let i = i0; i <= i1; i++) if (avg[i] > avg[ip]) ip = i;
+  // top bin over the whole band, with floor and sigma of the inner 80% of the band
+  // (display only; the sound does not use it)
+  let ip = 0; for (let i = 1; i < N; i++) if (avg[i] > avg[ip]) ip = i;
+  const band = avg.subarray(Math.round(0.1 * N), Math.round(0.9 * N));
+  const bFloor = median(band);
+  const bSigma = 1.4826 * median(Float64Array.from(band, v => Math.abs(v / bFloor - 1)));
   const fsky = i => h.f0 + i * df;
 
   // partials: aggregate bins if there are too many
@@ -214,8 +230,8 @@ function onSpectrum(buf) {
   }
   if (sigma > 0 && isFinite(floor)) send({ f, a, e, bw: A * df, tbw: Math.min(cfg.tbw, A * df) });
 
-  last = { h, avg, inst, N, df, i0, i1, ip, floor, sigma, fsky,
-           peakOff: (ip - mid) * df, peakZ: (avg[ip] / floor - 1) / sigma, tone: fsky(ip) - cfg.lo,
+  last = { h, avg, inst, N, df, i0, i1, ip, floor: bFloor, sigma: bSigma, fsky,
+           peakOff: (ip - mid) * df, peakZ: (avg[ip] / bFloor - 1) / bSigma, tone: fsky(ip) - cfg.lo,
            toneLo: fsky(i0) - cfg.lo, toneHi: fsky(i1) - cfg.lo, A };
   fresh = true; lastRx = performance.now();
 }
@@ -245,7 +261,7 @@ function draw() {
   if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
 
-  const pad = { l: 64, r: 18, t: 70, b: 76 }, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  const pad = { l: 64, r: 18, t: 46, b: 76 }, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
   const mid = L.N / 2, span = isFinite(cfg.span) ? cfg.span : L.N * L.df;
   const b0 = Math.max(0, Math.floor(mid + (cfg.center - span / 2) / L.df));
   const b1 = Math.min(L.N - 1, Math.ceil(mid + (cfg.center + span / 2) / L.df));
@@ -265,8 +281,8 @@ function draw() {
   const Y = v => pad.t + (1 - (v - yLo) / (yHi - yLo)) * ph;
 
   // grid + labels
-  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--grid");
-  ctx.fillStyle = "#8a8a8a"; ctx.font = "12px ui-monospace, Menlo, monospace"; ctx.lineWidth = 1;
+  ctx.strokeStyle = C.grid;
+  ctx.fillStyle = C.dim; ctx.font = "12px ui-monospace, Menlo, monospace"; ctx.lineWidth = 1;
   const xs = niceStep(fB - fA, 5), ys = niceStep(yHi - yLo, 5);
   const dec = Math.max(0, Math.ceil(-Math.log10(xs / 1e6)));
   ctx.textAlign = "center";
@@ -284,9 +300,9 @@ function draw() {
   ctx.fillText("power (dB)", 0, 0); ctx.restore();
 
   // sonified window
-  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--win");
-  const wx0 = X(L.fsky(L.i0)), wx1 = X(L.fsky(L.i1));
-  ctx.fillRect(wx0, pad.t, Math.max(1, wx1 - wx0), ph);
+  ctx.fillStyle = C.win;
+  const wx0 = Math.max(pad.l, X(L.fsky(L.i0))), wx1 = Math.min(pad.l + pw, X(L.fsky(L.i1)));
+  if (wx1 > wx0) ctx.fillRect(wx0, pad.t, Math.max(1, wx1 - wx0), ph);
 
   // traces: min/max per pixel column
   ctx.save(); ctx.beginPath(); ctx.rect(pad.l, pad.t, pw, ph); ctx.clip();
@@ -305,24 +321,54 @@ function draw() {
     }
     ctx.stroke();
   };
-  if (cfg.inst) trace(L.inst, getComputedStyle(document.documentElement).getPropertyValue("--inst"), 1);
-  trace(L.avg, getComputedStyle(document.documentElement).getPropertyValue("--line"), 1.2);
+  if (cfg.inst) trace(L.inst, C.inst, 1);
+  trace(L.avg, C.line, 1.2);
   ctx.restore();
+
+  // peak label: dB above floor, sigma, sky frequency, beside the peak (left of it near the right edge)
+  const peakdB = 10 * Math.log10(L.avg[L.ip] / L.floor);
+  const lines = [`${peakdB >= 0 ? "+" : ""}${peakdB.toFixed(1)} dB`, `${L.peakZ.toFixed(1)} σ`,
+                 `${(L.fsky(L.ip) / 1e6).toFixed(6)} MHz`];
+  const px = X(L.fsky(L.ip)), py = Y(dB(L.avg[L.ip]));
+  if (px >= pad.l && px <= pad.l + pw) {
+    ctx.font = "13px ui-monospace, Menlo, monospace";
+    const tw = Math.max(...lines.map(s => ctx.measureText(s).width)), lh = 16;
+    const right = px + 8 + tw <= pad.l + pw;
+    const tx = right ? px + 8 : px - 8;
+    let ty = Math.min(Math.max(py + 4, pad.t + 12), pad.t + ph - 2 * lh - 4);
+    ctx.textAlign = right ? "left" : "right";
+    ctx.lineJoin = "round"; ctx.lineWidth = 4;
+    const halo = C.bg && C.bg !== "transparent" && !/rgba\(.*,\s*0\)$/.test(C.bg);
+    lines.forEach((s, k) => {
+      if (halo) { ctx.strokeStyle = C.bg; ctx.strokeText(s, tx, ty + k * lh); }
+      ctx.fillStyle = C.fg; ctx.fillText(s, tx, ty + k * lh);
+    });
+  }
 
   // text
   const el = h.dt && isFinite(h.dt.el_deg) ? h.dt.el_deg : (h.tracker ? h.tracker.elevation : NaN);
-  const peakdB = 10 * Math.log10(L.avg[L.ip] / L.floor);
-  document.getElementById("top").textContent =
-    `${h.source || "spectrum"}   ${fmtUTC(h.t)}` + (isFinite(el) && el !== null ? `   el ${(+el).toFixed(1)}°` : "") + "\n" +
-    `peak ${(L.fsky(L.ip) / 1e6).toFixed(6)} MHz   ${peakdB >= 0 ? "+" : ""}${peakdB.toFixed(1)} dB   ${L.peakZ.toFixed(1)} σ`;
+  document.getElementById("top").textContent = `${h.source || "spectrum"}   ${fmtUTC(h.t)}   ${averagingText(h)}`;
   const tonesOK = L.toneLo > 20 && L.toneHi < (actx ? actx.sampleRate / 2 - 200 : 20000);
   document.getElementById("aud").textContent =
+    (isFinite(el) && el !== null ? `el ${(+el).toFixed(1)}°   ` : "") +
     `audio  LO ${(cfg.lo / 1e6).toFixed(6)} MHz${cfg.loWasAuto ? " (auto: add ?lo=" + cfg.lo + " to fix)" : ""}` +
     `   peak tone ${L.tone.toFixed(0)} Hz` +
     (h.tracker && isFinite(h.tracker.doppler_rate) ? ` (drift ${h.tracker.doppler_rate.toFixed(2)} Hz/s)` : "") +
     `   window ±${cfg.win} Hz   γ ${cfg.gamma}` +
-    `   vol ${muted ? "muted" : cfg.vol.toFixed(2)}   ${h.integration_time.toFixed(2)} s × ${h.overlap}, τ ${h.tau ?? "–"} s` +
+    `   vol ${muted ? "muted" : cfg.vol.toFixed(2)}   ${+(1 / h.integration_time).toFixed(1)} spectra/s` +
     (tonesOK ? "" : "   ⚠ window outside audio range, change lo");
+}
+
+// How much data is in the displayed spectrum. vrt_spectrum averages with weight max(1/n, 1 - exp(-dt/tau)):
+// a plain mean of all n spectra so far until n*dt reaches tau (always, for --tau inf), then exponential.
+function averagingText(h) {
+  const mode = h.averaging || (h.tau == null ? "none" : "exponential");   // older vrt_spectrum: no "averaging"
+  const dur = s => s < 90 ? `${s < 10 ? +s.toFixed(2) : Math.round(s)} seconds`
+                          : `${(s / 60).toFixed(s < 600 ? 1 : 0)} minutes`;
+  const elapsed = h.seq * h.integration_time;
+  if (mode === "none") return "no averaging";
+  if (mode === "running" || elapsed < h.tau) return `average of ${dur(elapsed)}`;
+  return `average of the last ~${dur(h.tau)} (exponential)`;
 }
 requestAnimationFrame(draw);
 </script>
