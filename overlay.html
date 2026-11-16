@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Voyager 1 one light-day overlay</title>
+<style>
+  /* OBS browser source: transparent background, text only */
+  html, body { margin: 0; background: transparent; }
+  body {
+    font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
+    font-size: 40px;
+    line-height: 1.35;
+    color: #fff;
+    text-shadow: 0 0 6px rgba(0,0,0,.85), 0 2px 3px rgba(0,0,0,.6);
+    padding: 24px 32px;
+    font-variant-numeric: tabular-nums;   /* digits don't jitter */
+  }
+  .row   { display: flex; gap: .6em; align-items: baseline; }
+  .label { opacity: .75; min-width: 9.5em; }
+  .unit, .small { opacity: .75; font-size: .7em; }
+  /* ?theme=light: dark text for light backgrounds, with a soft white halo instead of the dark shadow */
+  html.light body { color: #1a1a1a; text-shadow: 0 0 6px rgba(255,255,255,.9), 0 0 2px rgba(255,255,255,.9); }
+</style>
+</head>
+<body>
+  <div class="row"><span class="label">Time</span>
+    <span><span id="utc">--:--:--</span> <span class="unit">UTC</span>
+    <span class="small" id="local"></span></span></div>
+  <div class="row"><span class="label">Voyager 1 distance</span>
+    <span><span id="dist">--</span> <span class="unit">light-hours</span></span></div>
+  <div class="row"><span class="label" id="cdlabel">One light-day in</span>
+    <span id="cd">--:--:--</span></div>
+
+<script>
+/* ---------------- configuration (URL parameters override: ?t=...&rate=...&dec=...) */
+const P = new URLSearchParams(location.search);
+// ?theme=light: dark text for a light background; ?bg=fff (hex or CSS colour) fills the background,
+// which is transparent by default
+//if (P.get("theme") === "light") document.documentElement.classList.add("light");
+document.documentElement.classList.add("light");
+
+if (P.get("bg")) document.documentElement.style.background = document.body.style.background =
+  /^[0-9a-fA-F]{3,8}$/.test(P.get("bg")) ? "#" + P.get("bg") : P.get("bg");
+// Moment Voyager 1 is exactly 24 light-hours away (UTC, ISO 8601 with Z)
+const T_CROSS = Date.parse(P.get("t") || "2026-11-18T10:16:06Z");
+// Range rate at that moment in km/s. ~25 km/s is a rough estimate for mid-November;
+// replace with the value from voyager_lightday.py for best accuracy.
+const RATE_KM_S = parseFloat(P.get("rate") || "25.3");
+// Decimals for the light-hour figure (6 -> last digit = ~1080 km, ticks every ~40 s)
+const DECIMALS = parseInt(P.get("dec") || "6", 10);
+// Also show local time (Europe/Amsterdam); set ?local=0 to hide
+const SHOW_LOCAL = P.get("local") !== "0";
+
+/* ---------------- */
+const C_KM_S = 299792.458;
+const LH_PER_S = RATE_KM_S / C_KM_S / 3600;   // light-hours gained per second
+
+const pad = n => String(n).padStart(2, "0");
+const hms = s => `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
+const localFmt = new Intl.DateTimeFormat("nl-NL", {
+  timeZone: "Europe/Amsterdam", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  hour12: false, timeZoneName: "short" });
+
+const $ = id => document.getElementById(id);
+
+function tick() {
+  const now = Date.now();
+  const d = new Date(now);
+  $("utc").textContent = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+  if (SHOW_LOCAL) $("local").textContent = "· " + localFmt.format(d);
+
+  const dt = (now - T_CROSS) / 1000;               // seconds relative to crossing
+  $("dist").textContent = (24 + LH_PER_S * dt).toFixed(DECIMALS);
+
+  if (dt < 0) {
+    $("cdlabel").textContent = "One light-day in";
+    $("cd").textContent = hms(Math.ceil(-dt));     // hits 00:00:00 exactly at T_CROSS
+  } else {
+    $("cdlabel").textContent = "One light-day since";
+    $("cd").textContent = "+" + hms(Math.floor(dt));
+  }
+}
+tick();
+setInterval(tick, 100);
+</script>
+</body>
+</html>
