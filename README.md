@@ -18,7 +18,8 @@ VRT IQ (other machine) ─► vrt_tuner --tracking ─► vrt_spectrum ... --pub
 Example for the stream (1 Hz bins, 4 updates/s, 60 s average), keeping gnuplot as a backup:
 
 ```
-vrt_spectrum --instance 1 --bin-size 1 --wola --overlap 4 --integration-time 0.25 --tau 300 --gnuplot --fftmax --pub-port 50500 | gnuplot
+vrt_spectrum <your ports/options> --bin-size 1 --wola --overlap 4 --integration-time 0.25 --tau 60 \
+             --gnuplot --fftmax --pub-port 50500 | gnuplot
 ```
 
 ## 2. Relay and page
@@ -38,8 +39,9 @@ URL parameters (all optional):
 
 | param | meaning | default |
 |---|---|---|
-| `lo` | audio LO, sky frequency in Hz; tone = f_sky − lo (fixed: 1:1 Doppler) | auto, printed bottom-left |
-| `tone` | without `lo`: pick lo at page load so the window centre (`woff`) sounds at this pitch | 1000 |
+| `lo` | starting audio LO, sky frequency in Hz; pitch = f_sky − lo (1:1 Doppler) | automatic |
+| `low`, `high` | pitch range for the centre of the audio window, Hz (see Pitch below) | 300, 1800 |
+| `retune=0` | never retune: the LO stays where it starts | retune on |
 | `woff` | centre of the sonified window, Hz from band centre (fixed bin) | 0 |
 | `win` | half width of the sonified window, Hz | 150 |
 | `gamma`, `knee`, `zmax`, `hiss` | contrast curve, see below | 4, 2, 8, 1 |
@@ -51,7 +53,7 @@ URL parameters (all optional):
 | `theme=light` | white background, dark text and grid, trace `#9400d3` | dark |
 | `line` | trace colour as hex without `#`, e.g. `line=9400d3` | theme |
 | `bg` | background, e.g. `transparent` | theme |
-| `status=0` | hide the status line at the bottom (LO, tone, elevation, warnings) | shown |
+| `status=0` | hide the status line at the bottom (LO, pitch, elevation, warnings) | shown |
 
 The title shows how much data is in the displayed spectrum. `vrt_spectrum` takes a plain mean of all spectra since it started until that covers τ, then switches to an exponential average:
 
@@ -62,8 +64,6 @@ The title shows how much data is in the displayed spectrum. `vrt_spectrum` takes
 The count restarts when `vrt_spectrum` restarts. Elevation and the other technical details are in the footer.
 
 Keys: `m` mute, `+`/`-` volume, `c` centre the sonified window on the current peak (then put that `woff` in the URL).
-
-http://localhost:8090/?span=4000&woff=0&tone=600&theme=light&bg=transparent&status=0
 
 ## 3. Sonification
 
@@ -78,18 +78,48 @@ Off-source loudness is normalised, so it stays the same for any window size or c
 
 Because averaging happens in the Doppler-corrected frame and playback in the sky frame, the pitch drifts exactly as the real Doppler does.
 
-**Pitch.** `woff` only chooses *which bin* is sonified, and `lo` (or `tone`, at page load) sets the pitch. Put `woff` on the carrier first (press `c` once on source), then set the pitch. In the May 2025 recording the carrier is at `woff=251`, so `?woff=251&tone=500` starts at 500 Hz. With 1:1 Doppler the pitch can't stay put: it drifts at the tracker's Doppler rate, which the status line shows. In the recording that was −0.39 Hz/s, so 500 Hz becomes about 75 Hz after 18 minutes.
+**Pitch.** `woff` chooses *which bin* is sonified; the LO sets the pitch: pitch = sky frequency − LO. Put `woff` on the carrier first: press `c` once on source, then copy the value into the URL. In the May 2025 recording the carrier is at `woff=251`.
 
-**Choosing `lo` for the day:** set it explicitly, because `tone` re-picks lo on every page reload. Use lo = (tracker frequency + Doppler at the moment you choose) + woff − the pitch you want then. For example, ~1 kHz at 10:16:06 gives roughly 2.3 kHz at 09:16 and 0.4 kHz at 10:46.
+The LO is fixed, so the pitch drifts 1:1 with the Doppler. The tracker's Doppler rate is shown in the status line; in your rehearsal it was −0.39 Hz/s, or −1.4 kHz per hour. To keep it audible, the page **retunes automatically**:
 
-For 18 Nov the drift should be roughly −0.3 to −0.4 Hz/s: Earth rotation, partly offset by Earth's orbital acceleration. Your recording showed −0.38 to −0.41 Hz/s. The page warns when the window leaves the audio range.
+- When the centre of the audio window drops below `low` (300 Hz), the LO steps once so the centre sounds at `high` (1800 Hz) again. When it rises above `high`, the LO steps back to `low`.
+- Between steps nothing changes, so what you hear drifting is the real Doppler. A step is a single audible jump, as if an operator retuned the receiver.
+- Without `lo` in the URL, the first LO puts the centre at `high` when the Doppler rate is negative (at `low` when it is positive).
+- The status line shows the LO, the pitch range and how many retunes have happened.
+
+On 18 Nov from Horizons the drift is about −0.18 Hz/s at 09:16, −0.28 at 10:16 and −0.33 at 10:46. Starting at 1800 Hz around 09:16, the centre is near 950 Hz at 10:16:06, and the first retune comes around 10:50. Pass `lo` if you want to fix the starting point exactly; `retune=0` turns retuning off.
+
+## vrt_spectrum timestamp fix
+
+`vrt_spectrum-timestamp.patch` (also included in the combined patch): with packets longer than 1 s (10000 samples at 5 kS/s), the fraction of a second in the text outputs was not carried into the seconds, so `246.1220143593` meant 247.22 s. A fraction of exactly 1 s also slipped through (`240.1000000000` = 241.0 s). It now carries every whole second.
 
 ## sigmf_to_vrt --vrt fix
 
 `sigmf_to_vrt-vrt-overflow.patch`: with `--vrt`, packets are `fread` into `samples[VRT_SAMPLES_PER_PACKET]` (40000 bytes). A full 10000-sample data packet is 10007 words = 40028 bytes, so the read overflows the stack by 28 bytes. Linux glibc builds abort with `*** buffer overflow detected ***`; on macOS it probably just overwrites the next variable silently. The patch reads into `buffer[VRT_DATA_PACKET_SIZE]` instead, with a size check.
 
+## 4. Light-day overlay
+
+`overlay.html` is served by the relay at `http://localhost:8090/overlay`. Use that URL as a second OBS browser source.
+
+- **Time:** taken from the spectra's own timestamps, so the overlay always shows the same second as the spectrum page. Both show the time of the data, about 2 s behind real time. If no spectra arrive for 5 s, the overlay falls back to the computer clock; `?clock=local` forces that.
+- **Rows:** current time, distance in light-hours, km still to go (after the crossing: km beyond one light-day), and the countdown.
+- **Distance:** a JPL Horizons table for Dwingeloo (25-m) is built in, hourly for 17–19 Nov 2026 while Voyager is up. Between rows it interpolates using both distance and range rate, which is good to better than 1 km. The night gaps (Voyager below the horizon) are bridged with the same interpolation, good to a few hundred km there. Outside 17 Nov 09:00 – 19 Nov 20:00 it extrapolates in a straight line.
+
+**Which "distance".** Horizons' `delta` is the light-time range: from where Voyager was when the signal left, to Dwingeloo now. The overlay shows the instantaneous distance, which is longer by how far Voyager moved during that day. That offset (1,461,640 km) is set so the instantaneous distance is exactly one light-day at **18 Nov 10:16:06 UTC**, the agreed moment. It matches Voyager's speed in the same table (16.9177 km/s) times one day to within about 50 km (≈2 s). The countdown target is solved from the same model, so the countdown, the clock and the km figure reach zero together.
+
+The other definition, "the signal arriving now has travelled one day", is exactly where Horizons' `delta` reaches one light-day: **19 Nov ≈ 02:16:02 UTC**. Voyager is below the horizon then, and the table has a night gap there, so that time is good to roughly ±20 s.
+
+| param | meaning | default |
+|---|---|---|
+| `at` | rehearsal: start the clock at this UTC time, e.g. `at=2026-11-18T10:15:00Z` (runs on the computer clock from there) | off |
+| `dec`, `kmdec` | decimals of light-hours / km | 6, 1 |
+| `theme=light`, `bg`, `local=0` | as before | |
+| `ws` | relay address when the overlay is opened as a file | `localhost:8090` |
+
+**Cross-check on the day:** the spectrum page's status line shows the tracker's own distance from one light-day and its range rate, live from the stream. These need the rebuilt `vrt_spectrum`. The tracker may use either definition; they always differ by about 1.46 million km, so it is obvious which one it uses.
+
 ## Test files
 
 - `synthetic_sonification.mp3`: the page's own audio code, rendered offline from a synthetic run (details in the chat message).
-- `vgr1_recording_sonified_tone500.mp3`: first 5 minutes of your 14 May 2025 recording (`--tau 300 --bin-size 1 --wola`), `?woff=251&tone=500`.
+- `vgr1_recording_sonified_tone500.mp3`: first 5 minutes of your 14 May 2025 recording (`--tau 300 --bin-size 1 --wola`), starting at 500 Hz (made with the old `tone=500`; the same start is now `lo=8420257902`).
 - `live_test.png`: screenshot of the page during the live test.

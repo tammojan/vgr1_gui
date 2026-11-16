@@ -31,8 +31,13 @@
 "use strict";
 /* ============================================================================
    Settings (URL parameters), e.g.  /?lo=8420257500&win=150&gamma=4
-   lo     audio LO, sky frequency in Hz: tone = f_sky - lo   (default: auto, printed at the bottom)
-   tone   if lo is not given: choose lo at page load so the window centre sounds at this pitch [Hz] (1000)
+   lo     audio LO, sky frequency in Hz: pitch = f_sky - lo, 1:1 Doppler (default: automatic, see below)
+   low, high   pitch range [Hz] for the centre of the sonified window              (300, 1800)
+          Automatic retuning: when the Doppler drift takes the centre pitch below `low`, the LO
+          steps once so it sounds at `high` again (above `high`: back to `low`). Between steps the
+          LO is fixed, so the drift you hear is the real Doppler. Without `lo` the first LO puts
+          the centre at `high` when the tracker's Doppler rate is negative (at `low` when positive).
+   retune 0: never retune (the LO stays where it starts)                        (1)
    woff   centre of the sonified window, Hz offset from the band centre (fixed bin, Doppler corrected)
    win    half width of the sonified window [Hz]                     (150)
    gamma  contrast: partial power = hiss + clamp(z-knee, 0, zmax-knee)^gamma   (4)
@@ -52,7 +57,7 @@
 const Q = new URLSearchParams(location.search);
 const num = (k, d) => (Q.has(k) && Q.get(k) !== "" && isFinite(+Q.get(k))) ? +Q.get(k) : d;
 const cfg = {
-  lo: num("lo", NaN), tone: num("tone", 1000), tbw: num("tbw", 0.2), woff: num("woff", 0), win: num("win", 150), gamma: num("gamma", 4),
+  lo: num("lo", NaN), low: num("low", 300), high: num("high", 1800), retune: Q.get("retune") !== "0", tbw: num("tbw", 0.2), woff: num("woff", 0), win: num("win", 150), gamma: num("gamma", 4),
   zmax: num("zmax", 8), knee: num("knee", 2), hiss: num("hiss", 1), vol: num("vol", 0.5), span: num("span", NaN), center: num("center", 0),
   ymin: num("ymin", NaN), ymax: num("ymax", NaN), inst: Q.get("inst") === "1", maxosc: num("maxosc", 800), status: Q.get("status") !== "0",
 };
@@ -64,7 +69,7 @@ if (Q.has("bg")) root.style.setProperty("--bg", Q.get("bg"));
 const css = k => getComputedStyle(root).getPropertyValue(k).trim();
 const C = { fg: css("--fg"), dim: css("--dim"), line: css("--line"), inst: css("--inst"), win: css("--win"),
             grid: css("--grid"), bg: css("--bg") };
-let muted = false, loAuto = !isFinite(cfg.lo);
+let muted = false, retunes = 0;
 
 /* ---------------------------------------------------------------- audio synth
    Bank of narrow-band noise partials: each partial is a complex AR(1) noise
@@ -216,7 +221,17 @@ function onSpectrum(buf) {
 
   // partials: aggregate bins if there are too many
   const nb = i1 - i0 + 1, A = Math.max(1, Math.ceil(nb / cfg.maxosc)), np = Math.floor(nb / A);
-  if (loAuto && isFinite(fsky(c))) { cfg.lo = Math.round(fsky(c) - cfg.tone); loAuto = false; cfg.loWasAuto = true; }
+  // LO: fixed between (rare) automatic retunes, so the pitch drifts 1:1 with the Doppler
+  if (isFinite(fsky(c))) {
+    const rate = h.tracker && isFinite(h.tracker.doppler_rate) ? h.tracker.doppler_rate : 0;
+    if (!isFinite(cfg.lo)) {
+      cfg.lo = Math.round(fsky(c) - (rate < 0 ? cfg.high : rate > 0 ? cfg.low : (cfg.low + cfg.high) / 2));
+    } else if (cfg.retune) {
+      const pitch = fsky(c) - cfg.lo;
+      if (pitch < cfg.low)  { cfg.lo = Math.round(fsky(c) - cfg.high); retunes++; }
+      if (pitch > cfg.high) { cfg.lo = Math.round(fsky(c) - cfg.low);  retunes++; }
+    }
+  }
   const f = new Float32Array(np), a = new Float32Array(np), e = new Float32Array(np);
   const hissW = cfg.hiss, excessW = z => weight(z) - hissW;
   if (!isFinite(meanW)) meanW = noiseMeanWeight();
@@ -234,7 +249,7 @@ function onSpectrum(buf) {
 
   last = { h, avg, inst, N, df, i0, i1, ip, floor: bFloor, sigma: bSigma, fsky,
            peakOff: (ip - mid) * df, peakZ: (avg[ip] / bFloor - 1) / bSigma, tone: fsky(ip) - cfg.lo,
-           toneLo: fsky(i0) - cfg.lo, toneHi: fsky(i1) - cfg.lo, A };
+           toneLo: fsky(i0) - cfg.lo, toneHi: fsky(i1) - cfg.lo, centre: fsky(c) - cfg.lo, A };
   fresh = true; lastRx = performance.now();
 }
 
@@ -353,12 +368,15 @@ function draw() {
   const tonesOK = L.toneLo > 20 && L.toneHi < (actx ? actx.sampleRate / 2 - 200 : 20000);
   document.getElementById("aud").textContent =
     (isFinite(el) && el !== null ? `el ${(+el).toFixed(1)}°   ` : "") +
-    `audio  LO ${(cfg.lo / 1e6).toFixed(6)} MHz${cfg.loWasAuto ? " (auto: add ?lo=" + cfg.lo + " to fix)" : ""}` +
-    `   peak tone ${L.tone.toFixed(0)} Hz` +
+    `audio  LO ${(cfg.lo / 1e6).toFixed(6)} MHz` +
+    (cfg.retune ? ` (${cfg.low}–${cfg.high} Hz, retuned ${retunes}×)` : " (fixed)") +
+    `   centre ${L.centre.toFixed(0)} Hz   peak ${L.tone.toFixed(0)} Hz` +
     (h.tracker && isFinite(h.tracker.doppler_rate) ? ` (drift ${h.tracker.doppler_rate.toFixed(2)} Hz/s)` : "") +
     `   window ±${cfg.win} Hz   γ ${cfg.gamma}` +
     `   vol ${muted ? "muted" : cfg.vol.toFixed(2)}   ${+(1 / h.integration_time).toFixed(1)} spectra/s` +
-    (tonesOK ? "" : "   ⚠ window outside audio range, change lo");
+    (h.tracker && isFinite(h.tracker.distance) && isFinite(h.tracker.speed)
+      ? `   tracker: ${(h.tracker.distance / 1e3 - 25902068371.2).toFixed(1)} km from 1 light-day, ${(h.tracker.speed / 1e3).toFixed(4)} km/s` : "") +
+    (tonesOK ? "" : "   ⚠ part of the window is outside the audio range");
 }
 
 // How much data is in the displayed spectrum. vrt_spectrum averages with weight max(1/n, 1 - exp(-dt/tau)):
