@@ -6,7 +6,10 @@ Relay spectra published by `vrt_spectrum --pub-port` to browsers (websocket), an
     python3 vgr_relay.py --zmq tcp://localhost:50500 --http-port 8090
     open http://localhost:8090/            (or add it as an OBS browser source)
 
-Each websocket message is binary:
+The light-day overlay is served at /overlay; it uses /ws?header=1, which sends only the
+JSON header of each spectrum, as text.
+
+Each websocket message on /ws is binary:
     uint32 LE  header length H
     H bytes    JSON header from vrt_spectrum (padded with spaces to a multiple of 4)
     float32[N] averaged spectrum (linear power)
@@ -129,7 +132,8 @@ async def ws_handler(request):
     if hub.latest is not None:
         ev.set()
     hub.clients[ws] = ev
-    print(f"client connected ({len(hub.clients)}): {request.remote}")
+    header_only = request.query.get("header") == "1"     # /ws?header=1: JSON header as text, no spectra
+    print(f"client connected ({len(hub.clients)}){' [header only]' if header_only else ''}: {request.remote}")
 
     async def reader():  # only to notice disconnects
         async for m in ws:
@@ -144,7 +148,12 @@ async def ws_handler(request):
             except asyncio.TimeoutError:
                 continue
             ev.clear()
-            await ws.send_bytes(hub.latest)
+            msg = hub.latest
+            if header_only:
+                hl = struct.unpack("<I", msg[:4])[0]
+                await ws.send_str(msg[4:4 + hl].decode().rstrip())
+            else:
+                await ws.send_bytes(msg)
     except (ConnectionResetError, RuntimeError):
         pass
     finally:
@@ -156,6 +165,10 @@ async def ws_handler(request):
 
 async def index(request):
     return web.FileResponse(request.app["html"], headers={"Cache-Control": "no-store"})
+
+
+async def overlay(request):
+    return web.FileResponse(HERE / "overlay.html", headers={"Cache-Control": "no-store"})
 
 
 async def status(request):
@@ -176,7 +189,8 @@ async def main():
     hub = Hub()
     app = web.Application()
     app["hub"], app["html"] = hub, a.html
-    app.add_routes([web.get("/", index), web.get("/ws", ws_handler), web.get("/status", status)])
+    app.add_routes([web.get("/", index), web.get("/ws", ws_handler), web.get("/status", status),
+                    web.get("/overlay", overlay), web.get("/overlay.html", overlay)])
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, a.bind, a.http_port).start()
