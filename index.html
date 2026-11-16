@@ -49,7 +49,7 @@
    span, center   displayed span [Hz] and its centre offset [Hz] (default: full band)
    ymin, ymax     fixed y range [dB]       inst=1  also draw the instantaneous spectrum
    theme  light: white background, dark text, line #9400d3          (dark)
-   status 0: hide the status line at the bottom (and its warnings)   (1)
+   status 0: hide the status line at the bottom (and its warnings) and the shaded audio window   (1)
    line   trace colour as hex without #, e.g. line=9400d3
    bg     page background, e.g. transparent                          maxosc  max. partials (800)
    Keys: m mute, + / - volume, c centre the sonified window on the current peak
@@ -319,7 +319,7 @@ function draw() {
   // sonified window
   ctx.fillStyle = C.win;
   const wx0 = Math.max(pad.l, X(L.fsky(L.i0))), wx1 = Math.min(pad.l + pw, X(L.fsky(L.i1)));
-  if (wx1 > wx0) ctx.fillRect(wx0, pad.t, Math.max(1, wx1 - wx0), ph);
+  if (cfg.status && wx1 > wx0) ctx.fillRect(wx0, pad.t, Math.max(1, wx1 - wx0), ph);   // operator aid: hidden with status=0
 
   // traces: min/max per pixel column
   ctx.save(); ctx.beginPath(); ctx.rect(pad.l, pad.t, pw, ph); ctx.clip();
@@ -372,7 +372,7 @@ function draw() {
     (cfg.retune ? ` (${cfg.low}–${cfg.high} Hz, retuned ${retunes}×)` : " (fixed)") +
     `   centre ${L.centre.toFixed(0)} Hz   peak ${L.tone.toFixed(0)} Hz` +
     (h.tracker && isFinite(h.tracker.doppler_rate) ? ` (drift ${h.tracker.doppler_rate.toFixed(2)} Hz/s)` : "") +
-    `   window ±${cfg.win} Hz   γ ${cfg.gamma}` +
+    `   window woff=${Math.round(cfg.woff)} ±${cfg.win} Hz   γ ${cfg.gamma}` +
     `   vol ${muted ? "muted" : cfg.vol.toFixed(2)}   ${+(1 / h.integration_time).toFixed(1)} spectra/s` +
     (h.tracker && isFinite(h.tracker.distance) && isFinite(h.tracker.speed)
       ? `   tracker: ${(h.tracker.distance / 1e3 - 25902068371.2).toFixed(1)} km from 1 light-day, ${(h.tracker.speed / 1e3).toFixed(4)} km/s` : "") +
