@@ -16,7 +16,7 @@
     font-variant-numeric: tabular-nums;   /* digits don't jitter */
   }
   .row   { display: flex; gap: .6em; align-items: baseline; }
-  .label { opacity: .75; min-width: 9.5em; }
+  .label { opacity: .75; min-width: 10.6em; }   /* fits "Beyond one light-day": no jump at the crossing */
   .unit, .small { opacity: .75; font-size: .7em; }
   /* ?theme=light: dark text for light backgrounds, with a soft white halo instead of the dark shadow */
   html.light body { color: #1a1a1a; text-shadow: 0 0 6px rgba(255,255,255,.9), 0 0 2px rgba(255,255,255,.9); }
@@ -28,60 +28,172 @@
     <span class="small" id="local"></span></span></div>
   <div class="row"><span class="label">Voyager 1 distance</span>
     <span><span id="dist">--</span> <span class="unit">light-hours</span></span></div>
+  <div class="row"><span class="label" id="kmlabel">Still to go</span>
+    <span><span id="km">--</span> <span class="unit">km</span></span></div>
   <div class="row"><span class="label" id="cdlabel">One light-day in</span>
     <span id="cd">--:--:--</span></div>
 
 <script>
-/* ---------------- configuration (URL parameters override: ?t=...&rate=...&dec=...) */
+/* ============================================================================
+   Time source: the data timestamps of the spectra (via vgr_relay.py /ws?header=1), so
+   this overlay shows exactly the same second as the spectrum page. Falls back to the
+   computer clock when no spectra arrive for 5 s.
+   Distance: hard-coded JPL Horizons table for Dwingeloo (25-m), 17-19 Nov 2026 (below).
+   Horizons' delta is the light-time range: Voyager when the signal left -> Dwingeloo now.
+   The instantaneous distance is longer by how far Voyager moved during that light time:
+   GEO_OFFSET_KM, computed so the instantaneous distance is exactly one light-day at
+   T_ANCHOR = 2026-11-18 10:16:06 UTC. (It equals Voyager's speed, VmagSn 16.9177 km/s, times one day
+   to within ~50 km, i.e. ~2 s.) The countdown target is solved from the same model, so
+   the countdown and the km figure reach zero together.
+   URL parameters:
+     dec    decimals of the light-hours figure                     (6)
+     kmdec  decimals of the km figure                              (1)
+     ws     relay websocket address, e.g. localhost:8090 (default: the server this page came from,
+            or localhost:8090 when opened as a file)
+     clock  local: ignore the spectra, use the computer clock
+     at     rehearsal: start the clock at this UTC time, e.g. at=2026-11-18T10:14:00Z
+            (runs on the computer clock from there; ignores the spectra)
+     local  0: hide local time        theme  light: dark text     bg  background, e.g. fff
+   ========================================================================== */
 const P = new URLSearchParams(location.search);
-// ?theme=light: dark text for a light background; ?bg=fff (hex or CSS colour) fills the background,
-// which is transparent by default
-//if (P.get("theme") === "light") document.documentElement.classList.add("light");
-document.documentElement.classList.add("light");
-
+const DECIMALS = parseInt(P.get("dec") || "6", 10);
+const KMDEC = parseInt(P.get("kmdec") || "1", 10);
+const SHOW_LOCAL = P.get("local") !== "0";
+const AT = P.get("at") ? Date.parse(P.get("at")) / 1000 - Date.now() / 1000 : null;  // rehearsal offset [s]
+const USE_DATA = P.get("clock") !== "local" && AT === null;
+if (P.get("theme") === "light") document.documentElement.classList.add("light");
 if (P.get("bg")) document.documentElement.style.background = document.body.style.background =
   /^[0-9a-fA-F]{3,8}$/.test(P.get("bg")) ? "#" + P.get("bg") : P.get("bg");
-// Moment Voyager 1 is exactly 24 light-hours away (UTC, ISO 8601 with Z)
-const T_CROSS = Date.parse(P.get("t") || "2026-11-18T10:16:06Z");
-// Range rate at that moment in km/s. ~25 km/s is a rough estimate for mid-November;
-// replace with the value from voyager_lightday.py for best accuracy.
-const RATE_KM_S = parseFloat(P.get("rate") || "25.3");
-// Decimals for the light-hour figure (6 -> last digit = ~1080 km, ticks every ~40 s)
-const DECIMALS = parseInt(P.get("dec") || "6", 10);
-// Also show local time (Europe/Amsterdam); set ?local=0 to hide
-const SHOW_LOCAL = P.get("local") !== "0";
 
-/* ---------------- */
+/* JPL Horizons, target Voyager 1 (-31), observer Dwingeloo (25-m) 6.39643E 52.81212N 30 m,
+   source Voyager_1_ST+refit2022_m, generated 2026-11-16. UTC, delta [au], deldot [km/s].
+   Gaps: Voyager below the horizon (interpolated across, good to a few hundred km there). */
+const HORIZONS = [
+  ["2026-11-17T09:00Z", 173.119293246635, 25.5838992],
+  ["2026-11-17T10:00Z", 173.119909159442, 25.6099990],
+  ["2026-11-17T11:00Z", 173.120525871250, 25.6497363],
+  ["2026-11-17T12:00Z", 173.121143665480, 25.6992570],
+  ["2026-11-17T13:00Z", 173.121762724164, 25.7540368],
+  ["2026-11-17T14:00Z", 173.122383115466, 25.8091902],
+  ["2026-11-17T15:00Z", 173.123004789001, 25.8598064],
+  ["2026-11-17T16:00Z", 173.123627579285, 25.9012846],
+  ["2026-11-17T17:00Z", 173.124251217060, 25.9296502],
+  ["2026-11-17T18:00Z", 173.124875347742, 25.9418267],
+  ["2026-11-17T19:00Z", 173.125499555705, 25.9358462],
+  ["2026-11-17T20:00Z", 173.126123392751, 25.9109851],
+  ["2026-11-18T06:00Z", 173.132274730367, 25.2124987],
+  ["2026-11-18T07:00Z", 173.132881065653, 25.1859477],
+  ["2026-11-18T08:00Z", 173.133486989049, 25.1782707],
+  ["2026-11-18T09:00Z", 173.134092949954, 25.1888563],
+  ["2026-11-18T10:00Z", 173.134699367820, 25.2158415],
+  ["2026-11-18T11:00Z", 173.135306603411, 25.2562394],
+  ["2026-11-18T12:00Z", 173.135914934072, 25.3061436],
+  ["2026-11-18T13:00Z", 173.136524534725, 25.3609962],
+  ["2026-11-18T14:00Z", 173.137135465870, 25.4159001],
+  ["2026-11-18T15:00Z", 173.137747669439, 25.4659540],
+  ["2026-11-18T16:00Z", 173.138360972765, 25.5065891],
+  ["2026-11-18T17:00Z", 173.138975100405, 25.5338813],
+  ["2026-11-18T18:00Z", 173.139589693007, 25.5448207],
+  ["2026-11-18T19:00Z", 173.140204331926, 25.5375175],
+  ["2026-11-18T20:00Z", 173.140818567902, 25.5113313],
+  ["2026-11-19T06:00Z", 173.146873066981, 24.8118236],
+  ["2026-11-19T07:00Z", 173.147469774215, 24.7863982],
+  ["2026-11-19T08:00Z", 173.148066096817, 24.7798468],
+  ["2026-11-19T09:00Z", 173.148662483168, 24.7914742],
+  ["2026-11-19T10:00Z", 173.149259349750, 24.8193394],
+  ["2026-11-19T11:00Z", 173.149857052598, 24.8603885],
+  ["2026-11-19T12:00Z", 173.150455862904, 24.9106639],
+  ["2026-11-19T13:00Z", 173.151055948424, 24.9655759],
+  ["2026-11-19T14:00Z", 173.151657361982, 25.0202164],
+  ["2026-11-19T15:00Z", 173.152260037839, 25.0696960],
+  ["2026-11-19T16:00Z", 173.152863796198, 25.1094784],
+  ["2026-11-19T17:00Z", 173.153468355509, 25.1356917],
+  ["2026-11-19T18:00Z", 173.154073351760, 25.1453933],
+  ["2026-11-19T19:00Z", 173.154678363408, 25.1367716],
+  ["2026-11-19T20:00Z", 173.155282940260, 25.1092706],
+];
+const AU_KM = 149597870.7;
+const T_ANCHOR = Date.parse("2026-11-18T10:16:06Z") / 1000;   // agreed instantaneous one-light-day moment
 const C_KM_S = 299792.458;
-const LH_PER_S = RATE_KM_S / C_KM_S / 3600;   // light-hours gained per second
+const LD_KM = C_KM_S * 86400;
+const TBL = HORIZONS.map(([u, au, v]) => [Date.parse(u) / 1000, au * AU_KM, v]);
 
+// Horizons light-time range [km] at UTC t [s]: cubic Hermite on delta and deldot.
+// Outside the table: linear from the nearest row.
+function deltaKm(t) {
+  const n = TBL.length;
+  if (t <= TBL[0][0]) return TBL[0][1] + TBL[0][2] * (t - TBL[0][0]);
+  if (t >= TBL[n - 1][0]) return TBL[n - 1][1] + TBL[n - 1][2] * (t - TBL[n - 1][0]);
+  let i = 0; while (TBL[i + 1][0] < t) i++;
+  const [t0, d0, v0] = TBL[i], [t1, d1, v1] = TBL[i + 1], h = t1 - t0, s = (t - t0) / h;
+  return (2*s**3 - 3*s**2 + 1) * d0 + (s**3 - 2*s**2 + s) * h * v0
+       + (-2*s**3 + 3*s**2) * d1 + (s**3 - s**2) * h * v1;
+}
+// instantaneous distance = light-time range + how far Voyager moved during the light time
+// (~1.46 million km; equals VmagSn x 1 day to ~50 km), fixed so that it is one light-day at T_ANCHOR
+const GEO_OFFSET_KM = LD_KM - deltaKm(T_ANCHOR);
+const distanceKm = t => deltaKm(t) + GEO_OFFSET_KM;
+// moment of one light-day, solved from the same model (bisection over the table)
+const T_CROSS = (() => {
+  let lo = TBL[0][0], hi = TBL[TBL.length - 1][0];
+  for (let k = 0; k < 80; k++) { const m = (lo + hi) / 2; (distanceKm(m) < LD_KM) ? lo = m : hi = m; }
+  return (lo + hi) / 2;
+})();
+console.log("one light-day at", new Date(T_CROSS * 1000).toISOString());
 const pad = n => String(n).padStart(2, "0");
 const hms = s => `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
 const localFmt = new Intl.DateTimeFormat("nl-NL", {
   timeZone: "Europe/Amsterdam", hour: "2-digit", minute: "2-digit", second: "2-digit",
   hour12: false, timeZoneName: "short" });
-
+const kmFmt = new Intl.NumberFormat("en-US", { minimumFractionDigits: KMDEC, maximumFractionDigits: KMDEC });
 const $ = id => document.getElementById(id);
 
-function tick() {
-  const now = Date.now();
-  const d = new Date(now);
+/* ---------------------------------------------------------------- data clock */
+let last = null;                 // { t: data time [s], recv: performance.now() [ms] }
+function connect() {
+  const addr = P.get("ws") || (location.protocol.startsWith("http") ? location.host : "localhost:8090");
+  const ws = new WebSocket(`ws://${addr}/ws?header=1`);
+  ws.onmessage = e => {
+    try { const h = JSON.parse(e.data); if (isFinite(h.t)) last = { t: h.t, recv: performance.now() }; }
+    catch (err) { console.error(err); }
+  };
+  ws.onclose = () => setTimeout(connect, 1000);
+}
+if (USE_DATA) connect();
+
+let smooth = -Infinity;
+function times() {
+  const now = performance.now();
+  if (USE_DATA && last && now - last.recv < 5000) {
+    // whole seconds exactly as on the spectrum page; a smooth clock in between spectra for the km figure
+    let s = last.t + Math.min((now - last.recv) / 1000, 0.5);
+    if (s < smooth && smooth - s < 2) s = smooth;              // never run backwards (except a jump/restart)
+    smooth = s;
+    return { shown: Math.floor(last.t), smooth: s };
+  }
+  const s = Date.now() / 1000 + (AT || 0);
+  smooth = s;
+  return { shown: Math.floor(s), smooth: s };
+}
+
+/* ------------------------------------------------------------------- display */
+function frame() {
+  const { shown, smooth } = times();
+  const d = new Date(shown * 1000);
   $("utc").textContent = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
   if (SHOW_LOCAL) $("local").textContent = "· " + localFmt.format(d);
 
-  const dt = (now - T_CROSS) / 1000;               // seconds relative to crossing
-  $("dist").textContent = (24 + LH_PER_S * dt).toFixed(DECIMALS);
+  const km = distanceKm(smooth) - LD_KM;             // km beyond one light-day (negative: still to go)
+  $("dist").textContent = (24 + km / C_KM_S / 3600).toFixed(DECIMALS);
+  if (km < 0) { $("kmlabel").textContent = "Still to go"; $("km").textContent = kmFmt.format(-km); }
+  else        { $("kmlabel").textContent = "Beyond one light-day"; $("km").textContent = "+" + kmFmt.format(km); }
 
-  if (dt < 0) {
-    $("cdlabel").textContent = "One light-day in";
-    $("cd").textContent = hms(Math.ceil(-dt));     // hits 00:00:00 exactly at T_CROSS
-  } else {
-    $("cdlabel").textContent = "One light-day since";
-    $("cd").textContent = "+" + hms(Math.floor(dt));
-  }
+  const left = Math.round(T_CROSS) - shown;          // whole seconds, in step with the clock shown
+  if (left > 0) { $("cdlabel").textContent = "One light-day in"; $("cd").textContent = hms(left); }
+  else          { $("cdlabel").textContent = "One light-day since"; $("cd").textContent = "+" + hms(-left); }
+  requestAnimationFrame(frame);
 }
-tick();
-setInterval(tick, 100);
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
