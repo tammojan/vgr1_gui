@@ -99,7 +99,7 @@ On 18 Nov from Horizons the drift is about −0.18 Hz/s at 09:16, −0.28 at 10:
 `overlay.html` is served by the relay at `http://localhost:8090/overlay`. Use that URL as a second OBS browser source.
 
 - **Time:** taken from the spectra's own timestamps, so the overlay always shows the same second as the spectrum page. Both show the time of the data, about 2 s behind real time. If no spectra arrive for 5 s, the overlay falls back to the computer clock; `?clock=local` forces that.
-- **Rows:** current time, distance in light-hours, km still to go (after the crossing: km beyond one light-day), and the countdown.
+- **Rows:** current time, distance as light-time `hh:mm:ss.sss` (truncated, so it reads `24:00:00.000` from exactly the crossing; the last digit ticks every ~12 s, since 1 ms is 300 km), km still to go (after the crossing: km beyond one light-day), and the countdown.
 - **Distance:** a JPL Horizons table for Dwingeloo (25-m) is built in, hourly for 17–19 Nov 2026 while Voyager is up. Between rows it interpolates using both distance and range rate, which is good to better than 1 km. The night gaps (Voyager below the horizon) are bridged with the same interpolation, good to a few hundred km there. Outside 17 Nov 09:00 – 19 Nov 20:00 it extrapolates in a straight line.
 
 **Which "distance".** Horizons' `delta` is the light-time range: from where Voyager was when the signal left, to Dwingeloo now. The overlay shows the instantaneous distance, which is longer by how far Voyager moved during that day. That offset (1,461,640 km) is set so the instantaneous distance is exactly one light-day at **18 Nov 10:16:06 UTC**, the agreed moment. It matches Voyager's speed in the same table (16.9177 km/s) times one day to within about 50 km (≈2 s). The countdown target is solved from the same model, so the countdown, the clock and the km figure reach zero together.
@@ -109,7 +109,7 @@ The other definition, "the signal arriving now has travelled one day", is exactl
 | param | meaning | default |
 |---|---|---|
 | `at` | rehearsal: start the clock at this UTC time, e.g. `at=2026-11-18T10:15:00Z` (runs on the computer clock from there) | off |
-| `dec`, `kmdec` | decimals of light-hours / km | 6, 1 |
+| `kmdec` | decimals of the km figure | 1 |
 | `theme=light`, `bg`, `local=0` | as before | |
 | `ws` | relay address when the overlay is opened as a file | `localhost:8090` |
 

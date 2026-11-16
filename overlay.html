@@ -27,7 +27,7 @@
     <span><span id="utc">--:--:--</span> <span class="unit">UTC</span>
     <span class="small" id="local"></span></span></div>
   <div class="row"><span class="label">Voyager 1 distance</span>
-    <span><span id="dist">--</span> <span class="unit">light-hours</span></span></div>
+    <span><span id="dist">--:--:--.---</span> <span class="unit">light-time</span></span></div>
   <div class="row"><span class="label" id="kmlabel">Still to go</span>
     <span><span id="km">--</span> <span class="unit">km</span></span></div>
   <div class="row"><span class="label" id="cdlabel">One light-day in</span>
@@ -46,8 +46,7 @@
    to within ~50 km, i.e. ~2 s.) The countdown target is solved from the same model, so
    the countdown and the km figure reach zero together.
    URL parameters:
-     dec    decimals of the light-hours figure                     (6)
-     kmdec  decimals of the km figure                              (1)
+     kmdec  decimals of the km figure                              (0)
      ws     relay websocket address, e.g. localhost:8090 (default: the server this page came from,
             or localhost:8090 when opened as a file)
      clock  local: ignore the spectra, use the computer clock
@@ -56,7 +55,6 @@
      local  0: hide local time        theme  light: dark text     bg  background, e.g. fff
    ========================================================================== */
 const P = new URLSearchParams(location.search);
-const DECIMALS = parseInt(P.get("dec") || "6", 10);
 const KMDEC = parseInt(P.get("kmdec") || "0", 10);
 const SHOW_LOCAL = P.get("local") !== "0";
 const AT = P.get("at") ? Date.parse(P.get("at")) / 1000 - Date.now() / 1000 : null;  // rehearsal offset [s]
@@ -184,7 +182,11 @@ function frame() {
   if (SHOW_LOCAL) $("local").textContent = "· " + localFmt.format(d);
 
   const km = distanceKm(smooth) - LD_KM;             // km beyond one light-day (negative: still to go)
-  $("dist").textContent = (24 + km / C_KM_S / 3600).toFixed(DECIMALS);
+  // light time as hh:mm:ss.sss (1 ms = 300 km = ~12 s of travel). Truncated, not rounded, so it rolls over to
+  // 24:00:00.000 exactly at the crossing; computed from km so that km = 0 gives exactly 86400000 ms.
+  const ms = Math.floor(86400000 + km / C_KM_S * 1000 + 1e-6);
+  $("dist").textContent = `${pad(Math.floor(ms / 3600000))}:${pad(Math.floor(ms / 60000) % 60)}:` +
+                          `${pad(Math.floor(ms / 1000) % 60)}.${String(ms % 1000).padStart(3, "0")}`;
   if (km < 0) { $("kmlabel").textContent = "Still to go"; $("km").textContent = kmFmt.format(-km); }
   else        { $("kmlabel").textContent = "Beyond one light-day"; $("km").textContent = "+" + kmFmt.format(km); }
 
