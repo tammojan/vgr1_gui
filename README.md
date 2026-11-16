@@ -18,7 +18,7 @@ VRT IQ (other machine) ─► vrt_tuner --tracking ─► vrt_spectrum ... --pub
 Example for the stream (1 Hz bins, 4 updates/s, 60 s average), keeping gnuplot as a backup:
 
 ```
-vrt_spectrum --instance 1 --bin-size 1 --wola --overlap 4 --integration-time 0.25 --tau 60 --gnuplot --fftmax --pub-port 50500 | gnuplot
+vrt_spectrum --instance 1 --bin-size 1 --wola --overlap 4 --integration-time 0.25 --tau 300 --gnuplot --fftmax --pub-port 50500 | gnuplot
 ```
 
 ## 2. Relay and page
