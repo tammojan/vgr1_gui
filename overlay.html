@@ -57,7 +57,7 @@
    ========================================================================== */
 const P = new URLSearchParams(location.search);
 const DECIMALS = parseInt(P.get("dec") || "6", 10);
-const KMDEC = parseInt(P.get("kmdec") || "1", 10);
+const KMDEC = parseInt(P.get("kmdec") || "0", 10);
 const SHOW_LOCAL = P.get("local") !== "0";
 const AT = P.get("at") ? Date.parse(P.get("at")) / 1000 - Date.now() / 1000 : null;  // rehearsal offset [s]
 const USE_DATA = P.get("clock") !== "local" && AT === null;
