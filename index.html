@@ -19,6 +19,7 @@
   :root.light #warn { color: #b35900; }
   #click { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); padding: 10px 16px;
            border: 1px solid var(--dim); background: var(--bg); cursor: pointer; display: none; }
+  #nodata { position: absolute; top: 52px; right: 24px; color: var(--dim); font-size: 15px; display: none; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -26,6 +27,7 @@
 <div id="top">waiting for data…</div>
 <div id="bottom"><span id="aud"></span> <span id="warn"></span></div>
 <div id="click">click to enable audio</div>
+<div id="nodata"></div>
 
 <script>
 "use strict";
@@ -52,6 +54,8 @@
    status 0: hide the status line at the bottom (and its warnings) and the shaded audio window   (1)
    line   trace colour as hex without #, e.g. line=9400d3
    bg     page background, e.g. transparent                          maxosc  max. partials (800)
+   stale  seconds without spectra after which the sound fades out (and back in when they return)  (5)
+   nodata 0: don't show the "no data since …" note on the plot while there are no spectra           (1)
    Keys: m mute, + / - volume, c centre the sonified window on the current peak
    ========================================================================== */
 const Q = new URLSearchParams(location.search);
@@ -59,7 +63,7 @@ const num = (k, d) => (Q.has(k) && Q.get(k) !== "" && isFinite(+Q.get(k))) ? +Q.
 const cfg = {
   lo: num("lo", NaN), low: num("low", 300), high: num("high", 1800), retune: Q.get("retune") !== "0", tbw: num("tbw", 0.2), woff: num("woff", 0), win: num("win", 150), gamma: num("gamma", 4),
   zmax: num("zmax", 8), knee: num("knee", 2), hiss: num("hiss", 1), vol: num("vol", 0.5), span: num("span", NaN), center: num("center", 0),
-  ymin: num("ymin", NaN), ymax: num("ymax", NaN), inst: Q.get("inst") === "1", maxosc: num("maxosc", 800), status: Q.get("status") !== "0",
+  ymin: num("ymin", NaN), ymax: num("ymax", NaN), inst: Q.get("inst") === "1", maxosc: num("maxosc", 800), status: Q.get("status") !== "0", stale: num("stale", 5), nodata: Q.get("nodata") !== "0",
 };
 const root = document.documentElement;
 if (Q.get("theme") === "light") root.classList.add("light");
@@ -78,7 +82,7 @@ let muted = false, retunes = 0;
    a flat spectrum sounds like noise. Shared by AudioWorklet and fallback.       */
 const SYNTH_SRC = `
 class Synth {
-  constructor(fs) { this.fs = fs; this.n = 0; this.gain = 0; this.gainT = 0; this.alloc(0); }
+  constructor(fs) { this.fs = fs; this.n = 0; this.gain = 0; this.gainT = 0; this.fade = 1; this.fadeT = 1; this.alloc(0); }
   alloc(n) {
     this.n = n;
     for (const k of ["pr","pi","cr","ci","gr","gi","a","aT","f"]) this[k] = new Float64Array(n);
@@ -88,6 +92,7 @@ class Synth {
   // m.e: excess amplitude (bandwidth m.tbw, narrower -> steadier tone). Partials k and k+n share a frequency.
   set(m) {
     if (m.vol !== undefined) this.gainT = m.vol;
+    if (m.fade !== undefined) this.fadeT = m.fade;          // 0 while no spectra arrive, 1 otherwise
     if (!m.f) return;
     const n = m.f.length;
     if (2 * n !== this.n) this.alloc(2 * n);
@@ -123,7 +128,10 @@ class Synth {
       }
       const r = 1 / Math.hypot(pr, pi); this.pr[k] = pr * r; this.pi[k] = pi * r;
     }
-    const g0 = this.gain, g1 = g0 + (this.gainT - g0) * 0.05; this.gain = g1;
+    const step = N / (1.5 * this.fs);                       // fade in/out over 1.5 s
+    const f0 = this.fade, f1 = f0 + Math.max(-step, Math.min(step, this.fadeT - f0)); this.fade = f1;
+    const g0 = this.gain * f0, gN = this.gain + (this.gainT - this.gain) * 0.05; this.gain = gN;
+    const g1 = gN * f1;
     for (let j = 0; j < N; j++) out[j] = Math.tanh(out[j] * (g0 + (g1 - g0) * j / N));
   }
 }`;
@@ -253,6 +261,17 @@ function onSpectrum(buf) {
   fresh = true; lastRx = performance.now();
 }
 
+// No spectra for a while: fade the sound out (it would otherwise keep playing the last spectrum)
+// and say so on the plot; fade back in when spectra return. Runs on a timer, not on screen refresh.
+let silenced = false;
+setInterval(() => {
+  const stale = lastRx > 0 && performance.now() - lastRx > cfg.stale * 1000;
+  if (stale !== silenced) { silenced = stale; send({ fade: stale ? 0 : 1 }); }
+  const note = document.getElementById("nodata");
+  note.style.display = stale && cfg.nodata ? "block" : "none";
+  if (stale && last.h) note.textContent = "no data since " + fmtUTC(last.h.t).slice(11);
+}, 250);
+
 function connect() {
   const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
   ws.binaryType = "arraybuffer";
@@ -270,7 +289,7 @@ function niceStep(range, n) { const r = range / n, p = Math.pow(10, Math.floor(M
 
 function draw() {
   requestAnimationFrame(draw);
-  const stale = lastRx && performance.now() - lastRx > 5000;
+  const stale = lastRx && performance.now() - lastRx > cfg.stale * 1000;
   document.getElementById("warn").textContent = stale ? "  no data for " + ((performance.now() - lastRx) / 1000).toFixed(0) + " s" : "";
   if (!fresh) return; fresh = false;
   const L = last, h = L.h, dpr = devicePixelRatio || 1;

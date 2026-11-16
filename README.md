@@ -15,6 +15,8 @@ VRT IQ (other machine) ─► vrt_tuner --tracking ─► vrt_spectrum ... --pub
   2. float32 averaged spectrum (linear, `--poly`-corrected).
   3. float32 instantaneous spectrum.
 
+`vrt_spectrum` exits when the incoming stream is interrupted and restarted (e.g. a packet counter reset). Its existing `--continue` option keeps it running, so it picks the stream up again by itself.
+
 Example for the stream (1 Hz bins, 4 updates/s, 60 s average), keeping gnuplot as a backup:
 
 ```
@@ -53,7 +55,9 @@ URL parameters (all optional):
 | `theme=light` | white background, dark text and grid, trace `#9400d3` | dark |
 | `line` | trace colour as hex without `#`, e.g. `line=9400d3` | theme |
 | `bg` | background, e.g. `transparent` | theme |
-| `status=0` | hide the status line at the bottom (LO, pitch, elevation, warnings) | shown |
+| `status=0` | hide the status line at the bottom (LO, pitch, elevation, warnings) and the shaded audio window; both are operator aids | shown |
+| `stale` | seconds without spectra after which the sound fades out over 1.5 s; it fades back in when spectra return | 5 |
+| `nodata=0` | don't show the "no data since …" note on the plot while spectra are missing | shown |
 
 The title shows how much data is in the displayed spectrum. `vrt_spectrum` takes a plain mean of all spectra since it started until that covers τ, then switches to an exponential average:
 
@@ -78,7 +82,7 @@ Off-source loudness is normalised, so it stays the same for any window size or c
 
 Because averaging happens in the Doppler-corrected frame and playback in the sky frame, the pitch drifts exactly as the real Doppler does.
 
-**Pitch.** `woff` chooses *which bin* is sonified; the LO sets the pitch: pitch = sky frequency − LO. Put `woff` on the carrier first: press `c` once on source, then copy the value into the URL. In the May 2025 recording the carrier is at `woff=251`.
+**Pitch.** `woff` chooses *which bin* is sonified; the LO sets the pitch: pitch = sky frequency − LO. Put `woff` on the carrier first: press `c` once on source, read `woff=` in the status line, put it in the URL and reload once before going live. In the May 2025 recording the carrier is at `woff=251`.
 
 The LO is fixed, so the pitch drifts 1:1 with the Doppler. The tracker's Doppler rate is shown in the status line; in your rehearsal it was −0.39 Hz/s, or −1.4 kHz per hour. To keep it audible, the page **retunes automatically**:
 
@@ -89,13 +93,6 @@ The LO is fixed, so the pitch drifts 1:1 with the Doppler. The tracker's Doppler
 
 On 18 Nov from Horizons the drift is about −0.18 Hz/s at 09:16, −0.28 at 10:16 and −0.33 at 10:46. Starting at 1800 Hz around 09:16, the centre is near 950 Hz at 10:16:06, and the first retune comes around 10:50. Pass `lo` if you want to fix the starting point exactly; `retune=0` turns retuning off.
 
-## vrt_spectrum timestamp fix
-
-`vrt_spectrum-timestamp.patch` (also included in the combined patch): with packets longer than 1 s (10000 samples at 5 kS/s), the fraction of a second in the text outputs was not carried into the seconds, so `246.1220143593` meant 247.22 s. A fraction of exactly 1 s also slipped through (`240.1000000000` = 241.0 s). It now carries every whole second.
-
-## sigmf_to_vrt --vrt fix
-
-`sigmf_to_vrt-vrt-overflow.patch`: with `--vrt`, packets are `fread` into `samples[VRT_SAMPLES_PER_PACKET]` (40000 bytes). A full 10000-sample data packet is 10007 words = 40028 bytes, so the read overflows the stack by 28 bytes. Linux glibc builds abort with `*** buffer overflow detected ***`; on macOS it probably just overwrites the next variable silently. The patch reads into `buffer[VRT_DATA_PACKET_SIZE]` instead, with a size check.
 
 ## 4. Light-day overlay
 
