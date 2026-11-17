@@ -143,7 +143,9 @@ const hms = s => `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:$
 const localFmt = new Intl.DateTimeFormat("nl-NL", {
   timeZone: "Europe/Amsterdam", hour: "2-digit", minute: "2-digit", second: "2-digit",
   hour12: false, timeZoneName: "short" });
-const kmFmt = new Intl.NumberFormat("en-US", { minimumFractionDigits: KMDEC, maximumFractionDigits: KMDEC });
+const kmNum = new Intl.NumberFormat("en-US", { minimumFractionDigits: KMDEC, maximumFractionDigits: KMDEC });
+// thousands separated by a narrow no-break space (U+202F, the SI style), decimal point kept
+const kmFmt = { format: x => kmNum.formatToParts(x).map(p => p.type === "group" ? "\u202F" : p.value).join("") };
 const $ = id => document.getElementById(id);
 
 /* ---------------------------------------------------------------- data clock */
