@@ -56,6 +56,7 @@
    bg     page background, e.g. transparent                          maxosc  max. partials (800)
    stale  seconds without spectra after which the sound fades out (and back in when they return)  (5)
    nodata 0: don't show the "no data since …" note on the plot while there are no spectra           (1)
+   peakfreq 0: leave the frequency out of the peak label (keep dB and σ)                            (1)
    Keys: m mute, + / - volume, c centre the sonified window on the current peak
    ========================================================================== */
 const Q = new URLSearchParams(location.search);
@@ -63,7 +64,7 @@ const num = (k, d) => (Q.has(k) && Q.get(k) !== "" && isFinite(+Q.get(k))) ? +Q.
 const cfg = {
   lo: num("lo", NaN), low: num("low", 300), high: num("high", 1800), retune: Q.get("retune") !== "0", tbw: num("tbw", 0.2), woff: num("woff", 0), win: num("win", 150), gamma: num("gamma", 4),
   zmax: num("zmax", 8), knee: num("knee", 2), hiss: num("hiss", 1), vol: num("vol", 0.5), span: num("span", NaN), center: num("center", 0),
-  ymin: num("ymin", NaN), ymax: num("ymax", NaN), inst: Q.get("inst") === "1", maxosc: num("maxosc", 800), status: Q.get("status") !== "0", stale: num("stale", 5), nodata: Q.get("nodata") !== "0",
+  ymin: num("ymin", NaN), ymax: num("ymax", NaN), inst: Q.get("inst") === "1", maxosc: num("maxosc", 800), status: Q.get("status") !== "0", stale: num("stale", 5), nodata: Q.get("nodata") !== "0", peakfreq: Q.get("peakfreq") !== "0",
 };
 const root = document.documentElement;
 if (Q.get("theme") === "light") root.classList.add("light");
@@ -363,15 +364,15 @@ function draw() {
 
   // peak label: dB above floor, sigma, sky frequency, beside the peak (left of it near the right edge)
   const peakdB = 10 * Math.log10(L.avg[L.ip] / L.floor);
-  const lines = [`${peakdB >= 0 ? "+" : ""}${peakdB.toFixed(1)} dB`, `${L.peakZ.toFixed(1)} σ`,
-                 `${(L.fsky(L.ip) / 1e6).toFixed(6)} MHz`];
+  const lines = [`${peakdB >= 0 ? "+" : ""}${peakdB.toFixed(1)} dB`, `${L.peakZ.toFixed(1)} σ`];
+  if (cfg.peakfreq) lines.push(`${(L.fsky(L.ip) / 1e6).toFixed(6)} MHz`);
   const px = X(L.fsky(L.ip)), py = Y(dB(L.avg[L.ip]));
   if (px >= pad.l && px <= pad.l + pw) {
     ctx.font = "13px ui-monospace, Menlo, monospace";
     const tw = Math.max(...lines.map(s => ctx.measureText(s).width)), lh = 16;
     const right = px + 8 + tw <= pad.l + pw;
     const tx = right ? px + 8 : px - 8;
-    let ty = Math.min(Math.max(py + 4, pad.t + 12), pad.t + ph - 2 * lh - 4);
+    let ty = Math.min(Math.max(py + 4, pad.t + 12), pad.t + ph - (lines.length - 1) * lh - 4);
     ctx.textAlign = right ? "left" : "right";
     ctx.lineJoin = "round"; ctx.lineWidth = 4;
     const halo = C.bg && C.bg !== "transparent" && !/rgba\(.*,\s*0\)$/.test(C.bg);
